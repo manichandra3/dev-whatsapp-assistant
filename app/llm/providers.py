@@ -42,8 +42,8 @@ class LLMResponse:
     """Response from an LLM call."""
 
     content: str | None
-    tool_calls: list[ToolCall] = field(default_factory=list)
     finish_reason: str | None = None
+    parsed_json: dict[str, Any] | None = None
 
 
 class LLMProvider:
@@ -81,59 +81,52 @@ class LLMProvider:
         logger.info(f"[LLM] Initialized {self.provider} with model {self.model}")
 
     def get_system_prompt(self) -> str:
-        """Generate system prompt for ACL Rehab Coach."""
-        return """You are a Daily ACL Rehab Coach. Your role is to guide patients through their ACL reconstruction recovery with empathy, discipline, and evidence-based recommendations.
+        """Generate system prompt for Developer WhatsApp Assistant."""
+        return """You are the brain of a developer's WhatsApp assistant. Your job is to analyze the user's message, considering the recent conversation history, and determine what action they want to take.
+You MUST respond ONLY with a valid, minified JSON object containing the following keys: intent, topic, and metadata.
 
-IMPORTANT: Each user message includes [USER CONTEXT] with their surgery date, current recovery phase, and latest metrics. Use this context to provide personalized, phase-appropriate guidance.
+The intent must be exactly one of the following:
+- schedule_task: If the user wants to set a reminder or get daily updates.
+- execute_code: If the user provides code and wants to run or test it.
+- debug_code: If the user provides an error message, stack trace, or asks about debugging specific lines/files.
+- summarize_link: If the user provides a URL or long text to read.
+- log_expense: If the user mentions spending money or a cost.
+- general_chat: If it is a normal conversation or question.
 
-SURGERY DATE HANDLING:
-- If the user mentions their surgery date (e.g., "my surgery was on January 15th" or "I had surgery 3 weeks ago"), IMMEDIATELY call the set_surgery_date tool to record it.
-- Convert relative dates (e.g., "3 weeks ago") to absolute dates (YYYY-MM-DD format) before calling the tool.
-- If no surgery date is set and user hasn't provided one, ask for it before proceeding with check-in.
+Example Input: 'Remind me to check the server logs tomorrow morning'
+Example Output: {"intent":"schedule_task","topic":"check server logs","metadata":{"frequency":"once","time":"09:00"}}
 
-DAILY WORKFLOW:
-1. Greet the user warmly and ask for their daily check-in:
-   - Pain level (0-10 scale)
-   - Swelling status (worse/same/better)
-   - Range of motion (extension and flexion in degrees)
-   - Exercise adherence (yes/no)
+CRITICAL RULES:
+1. DO NOT include historical context in the metadata payload. The topic should be the immediate subject (e.g. "line 42 evaluation").
+2. DO NOT output any markdown blocks (like ```json), just the raw minified JSON.
+3. ALWAYS ensure the output is parseable by JSON.loads()."""
 
-2. ALWAYS call the log_daily_metrics tool IMMEDIATELY after collecting this data. Do not provide any exercise recommendations until you have logged the metrics.
+    def _extract_json(self, text: str | None) -> dict[str, Any] | None:
+        """Extract JSON from standard text, or fallback regex search."""
+        if not text:
+            return None
+        import re
+        text = text.strip()
+        # Remove potential markdown formatting
+        if text.startswith("```json"):
+            text = text[7:]
+        if text.startswith("```"):
+            text = text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
 
-3. ALWAYS call the get_recovery_phase tool to determine their current recovery phase and get appropriate exercise recommendations.
-
-4. Provide phase-specific exercise recommendations based on the recovery phase data. Customize based on their reported metrics:
-   - If pain is high (>7), suggest gentler modifications
-   - If swelling is worse, emphasize RICE protocol
-   - If ROM is decreasing, recommend immediate contact with their surgeon
-   - If adherence is low, provide motivation and problem-solve barriers
-
-5. Include these daily reminders EVERY response:
-   💧 Drink 2.5-3 liters of water today
-   💊 Take medications after meals as prescribed
-   🧊 Ice and elevate for 15-20 minutes, 3 times daily
-
-TONE & STYLE:
-- Empathetic but disciplined - acknowledge their struggles while keeping them accountable
-- Evidence-based and specific - cite recovery phases and standard protocols
-- Encouraging without minimizing challenges - validate their experience
-- Clear about red flags and when to contact their doctor
-
-SAFETY CRITICAL RULES:
-- If pain level is >7/10, recommend contacting their physician
-- If swelling is getting worse after week 2, recommend medical evaluation
-- If ROM is decreasing from previous measurements, strongly recommend calling surgeon
-- NEVER diagnose conditions or suggest modifying prescribed treatment plans
-- ALWAYS defer to their surgeon or physical therapist for medical decisions
-- Remind them this is coaching support, NOT medical advice
-
-RESPONSE FORMAT:
-- Keep responses concise but warm (aim for 150-250 words)
-- Use emojis sparingly for key points (✓, ⚠️, 💪, 🎯)
-- Structure with clear sections when providing exercise lists
-- Always end with encouragement and next steps
-
-Remember: You're a supportive coach helping them stay on track with their recovery protocol. Be their accountability partner and cheerleader, not their doctor."""
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            # Fallback regex search
+            match = re.search(r'\{.*\}', text, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group(0))
+                except json.JSONDecodeError:
+                    pass
+        return None
 
     async def chat(
         self,
@@ -152,13 +145,16 @@ Remember: You're a supportive coach helping them stay on track with their recove
         """
         try:
             if self.provider == "openai":
-                return await self._chat_openai(messages, tools)
+                response = await self._chat_openai(messages, tools)
             elif self.provider == "anthropic":
-                return await self._chat_anthropic(messages, tools)
+                response = await self._chat_anthropic(messages, tools)
             elif self.provider == "google":
-                return await self._chat_google(messages, tools)
+                response = await self._chat_google(messages, tools)
             else:
                 raise ValueError(f"Unsupported provider: {self.provider}")
+            
+            response.parsed_json = self._extract_json(response.content)
+            return response
         except Exception as e:
             logger.error(f"[LLM] Error: {e}")
             raise
@@ -172,8 +168,9 @@ Remember: You're a supportive coach helping them stay on track with their recove
         params: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "temperature": 0.7,
+            "temperature": 0.0,
             "max_tokens": 1000,
+            "response_format": {"type": "json_object"},
         }
 
         if tools:

@@ -1,12 +1,12 @@
 [project]
-name = "acl-rehab-coach"
+name = "dev-whatsapp-assistant"
 version = "1.0.0"
-description = "Daily ACL Rehab Coach - WhatsApp AI Agent with Safety Interceptor"
+description = "Developer WhatsApp Assistant - Intent routing and coding brain"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-authors = [{ name = "ACL Rehab Coach Team" }]
-keywords = ["acl", "rehab", "whatsapp", "ai", "health"]
+authors = [{ name = "Dev Assistant Team" }]
+keywords = ["developer", "assistant", "whatsapp", "ai", "bot"]
 
 dependencies = [
     "fastapi>=0.115.0",

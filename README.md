@@ -1,23 +1,20 @@
-# 🦞 ACL Rehab Coach
+# 🤖 Developer WhatsApp Assistant
 
-A Daily ACL Rehabilitation Coach with WhatsApp integration (Baileys) and AI (OpenAI/Anthropic/Google Gemini). Features a hybrid safety model combining deterministic rule-based red flag detection with dynamic LLM coaching.
+A Developer's WhatsApp Assistant Brain (via Baileys) and AI (OpenAI/Anthropic/Google Gemini). Features an intent router for taking actions like setting reminders, running code, and summarizing links.
 
-**Architecture**: Hybrid Bridge - Node.js handles WhatsApp transport only, while Python handles all coaching logic (safety, LLM, database, tools).
+**Architecture**: Hybrid Bridge - Node.js handles WhatsApp transport, while Python handles the LLM orchestration, SQLite memory, and intent routing.
 
 ## 🎯 Features
 
-### 🛡️ Hybrid Safety Model
-- **Deterministic Safety Interceptor**: Scans all incoming messages for medical emergency keywords BEFORE LLM processing
-- **Red Flag Detection**: Automatically detects symptoms like DVT, infection, graft failure, severe swelling, and more
-- **Emergency Response**: Bypasses AI and sends hardcoded emergency instructions to contact surgeon immediately
+### 🧠 Intent Routing
+- **Strict JSON Generation**: Evaluates user intent into `schedule_task`, `execute_code`, `debug_code`, `summarize_link`, `log_expense`, or `general_chat`
+- **Fallback Catch**: "Silent Catch" gracefully degrades parsing failures into conversational apologies
+- **Dual Stack Support**: Run in pure Node.js or via the Python bridge for future Python-native agent tooling
 
-### 🤖 AI-Powered Coaching
-- **Phase-Specific Guidance**: Automatically calculates recovery phase (1-4) based on weeks post-op
-- **Daily Check-ins**: Tracks pain, swelling, range of motion, and exercise adherence
-- **Evidence-Based Recommendations**: Provides exercises and precautions appropriate for each recovery phase
-- **Empathetic Persona**: Combines discipline with encouragement
+### 💾 Stateful Memory
+- **Rolling Context**: Remembers the last 10 messages for stateful debugging conversations
+- **SQLite Storage**: Logs all messages and generated intents for analytics and recovery
 
-### 💾 Data Tracking
 - **SQLite Database**: Stores daily metrics, recovery milestones, and user configuration
 - **Trend Analysis**: Monitors progress over time
 - **Privacy-First**: All data stored locally

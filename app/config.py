@@ -30,13 +30,12 @@ class Settings(BaseSettings):
     google_api_key: str | None = None
 
     # Database
-    database_path: str = "./data/acl_rehab.db"
+    database_path: str = "./data/dev_assistant.db"
 
     # WhatsApp Session (used by Node bridge)
     whatsapp_session_path: str = "./whatsapp_session"
 
-    # Default surgery date for new users
-    surgery_date: str | None = None
+
 
     # Logging
     log_level: str = "info"

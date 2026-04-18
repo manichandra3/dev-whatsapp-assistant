@@ -2,7 +2,7 @@
 Bridge API - HTTP endpoint for Node adapter communication.
 
 Provides a simple REST API that the Node.js WhatsApp adapter can use
-to send messages to the Python coach and receive responses.
+to send messages to the Python brain and receive responses.
 """
 
 import logging
@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from app.coach import ACLRehabCoach
+from app.assistant import DevAssistantBrain
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -41,18 +41,18 @@ class HealthResponse(BaseModel):
     model: str
 
 
-# Global coach instance (initialized on startup)
-coach: ACLRehabCoach | None = None
+# Global brain instance (initialized on startup)
+brain: DevAssistantBrain | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle."""
-    global coach
+    global brain
 
     # Startup
     settings = get_settings()
-    coach = ACLRehabCoach(settings)
+    brain = DevAssistantBrain(settings)
 
     logger.info(f"[BRIDGE] Started with provider: {settings.llm_provider}")
     logger.info(f"[BRIDGE] Model: {settings.llm_model}")
@@ -61,15 +61,15 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    if coach:
-        coach.close()
+    if brain:
+        brain.close()
     logger.info("[BRIDGE] Shutdown complete")
 
 
 # Create FastAPI app
 app = FastAPI(
-    title="ACL Rehab Coach Bridge",
-    description="HTTP bridge for Node.js WhatsApp adapter to Python coach",
+    title="Dev Assistant Bridge",
+    description="HTTP bridge for Node.js WhatsApp adapter to Python brain",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -92,17 +92,17 @@ async def handle_message(request: MessageRequest) -> MessageResponse:
     Handle an incoming message from the Node.js WhatsApp adapter.
 
     This endpoint receives messages from the Node bridge client,
-    processes them through the coach, and returns the response.
+    processes them through the brain, and returns the response.
     """
-    global coach
+    global brain
 
-    if not coach:
-        raise HTTPException(status_code=503, detail="Coach not initialized")
+    if not brain:
+        raise HTTPException(status_code=503, detail="Brain not initialized")
 
     try:
         logger.info(f"[BRIDGE] Received message from {request.user_id}")
 
-        response = await coach.handle_message(
+        response = await brain.handle_message(
             user_id=request.user_id,
             message_text=request.message_text,
         )
@@ -122,7 +122,7 @@ async def handle_message(request: MessageRequest) -> MessageResponse:
 async def root() -> dict[str, str]:
     """Root endpoint with basic info."""
     return {
-        "service": "ACL Rehab Coach Bridge",
+        "service": "Dev Assistant Bridge",
         "version": "1.0.0",
         "docs": "/docs",
     }

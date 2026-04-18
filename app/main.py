@@ -1,5 +1,5 @@
 """
-ACL Rehab Coach - Main Application Entry Point
+Developer WhatsApp Assistant - Main Application Entry Point
 
 Starts the FastAPI server for the Python bridge.
 """
@@ -30,7 +30,7 @@ def main() -> None:
     log_level = settings.log_level.upper()
     logging.getLogger().setLevel(log_level)
 
-    logger.info("ACL Rehab Coach Starting...")
+    logger.info("Dev Assistant Starting...")
     logger.info(f"LLM Provider: {settings.llm_provider}")
     logger.info(f"Model: {settings.llm_model}")
     logger.info(f"Database: {settings.database_path}")

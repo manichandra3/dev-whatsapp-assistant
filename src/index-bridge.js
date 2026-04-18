@@ -1,8 +1,8 @@
 /**
- * ACL Rehab Coach - Bridge Mode Entry Point
+ * Dev Assistant - Bridge Mode Entry Point
  * 
  * This entry point uses Node.js only for WhatsApp transport (Baileys),
- * while delegating all coaching logic to the Python backend.
+ * while delegating all assistant logic to the Python backend.
  */
 
 import dotenv from 'dotenv';
@@ -12,7 +12,7 @@ import { BridgeClient } from './bridge-client.js';
 // Load environment variables
 dotenv.config();
 
-class ACLRehabCoachBridge {
+class DevAssistantBridge {
   constructor() {
     // Build bridge URL from environment
     const bridgeHost = process.env.PYTHON_BRIDGE_HOST || '127.0.0.1';
@@ -36,7 +36,7 @@ class ACLRehabCoachBridge {
     await this.whatsapp.sendTyping(userId, true);
 
     try {
-      // Forward message to Python coach
+      // Forward message to Python brain
       const result = await this.bridge.sendMessage(userId, messageText);
 
       await this.whatsapp.sendTyping(userId, false);
@@ -44,7 +44,7 @@ class ACLRehabCoachBridge {
       if (result.success) {
         return result.response;
       } else {
-        console.error(`[BRIDGE] Error from Python coach: ${result.error}`);
+        console.error(`[BRIDGE] Error from Python brain: ${result.error}`);
         return result.response || '❌ I apologize, but I encountered a technical issue. Please try sending your message again.';
       }
 
@@ -56,7 +56,7 @@ class ACLRehabCoachBridge {
   }
 
   async start() {
-    console.log('🦞 ACL Rehab Coach (Bridge Mode) Starting...\n');
+    console.log('🤖 Dev Assistant (Bridge Mode) Starting...\n');
 
     // Wait for Python bridge to be ready
     console.log('[BRIDGE] Waiting for Python backend...');
@@ -69,20 +69,20 @@ class ACLRehabCoachBridge {
     }
 
     const health = await this.bridge.healthCheck();
-    console.log(`[BRIDGE] Connected to Python coach`);
+    console.log(`[BRIDGE] Connected to Python brain`);
     console.log(`   Provider: ${health.provider}`);
     console.log(`   Model: ${health.model}\n`);
 
     // Connect WhatsApp
     await this.whatsapp.connect();
 
-    console.log('\n✅ ACL Rehab Coach (Bridge Mode) is running!');
-    console.log('   WhatsApp -> Node.js -> Python Coach');
+    console.log('\n✅ Dev Assistant (Bridge Mode) is running!');
+    console.log('   WhatsApp -> Node.js -> Python Brain');
     console.log('   Waiting for WhatsApp messages...\n');
   }
 
   async stop() {
-    console.log('\n🛑 Shutting down ACL Rehab Coach (Bridge Mode)...');
+    console.log('\n🛑 Shutting down Dev Assistant (Bridge Mode)...');
     await this.whatsapp.disconnect();
     console.log('✅ Shutdown complete');
     process.exit(0);
@@ -90,7 +90,7 @@ class ACLRehabCoachBridge {
 }
 
 // Start the application
-const coach = new ACLRehabCoachBridge();
+const coach = new DevAssistantBridge();
 
 // Handle graceful shutdown
 process.on('SIGINT', () => coach.stop());
@@ -98,8 +98,8 @@ process.on('SIGTERM', () => coach.stop());
 
 // Start the bot
 coach.start().catch(error => {
-  console.error('❌ Fatal error starting ACL Rehab Coach:', error);
+  console.error('❌ Fatal error starting Dev Assistant:', error);
   process.exit(1);
 });
 
-export default ACLRehabCoachBridge;
+export default DevAssistantBridge;
