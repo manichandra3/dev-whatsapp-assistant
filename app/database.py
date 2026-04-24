@@ -7,7 +7,7 @@ Handles all database operations for stateful memory and intent logging.
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +43,19 @@ class Message:
     role: str
     content: str
     timestamp: str
+
+
+@dataclass
+class ScheduledTask:
+    """Scheduled task record."""
+
+    id: int
+    user_id: str
+    task_description: str
+    schedule_details: str
+    status: str
+    due_at: str
+    frequency: str
 
 
 class DatabaseManager:
@@ -88,6 +101,46 @@ class DatabaseManager:
             Column("timestamp", DateTime, nullable=False, server_default=text("DATETIME('now')")),
         )
 
+        self.scheduled_tasks = Table(
+            "scheduled_tasks",
+            self.metadata,
+            Column("id", Integer, primary_key=True, autoincrement=True),
+            Column("user_id", Text, nullable=False),
+            Column("task_description", Text, nullable=False),
+            Column("schedule_details", Text, nullable=False),
+            Column("status", Text, nullable=False, server_default="pending"),
+            Column("due_at", DateTime, nullable=True),
+            Column("frequency", Text, nullable=False, server_default="once"),
+            Column("delivered_at", DateTime, nullable=True),
+            Column("created_at", DateTime, nullable=False, server_default=text("DATETIME('now')")),
+        )
+
+        self.expense_logs = Table(
+            "expense_logs",
+            self.metadata,
+            Column("id", Integer, primary_key=True, autoincrement=True),
+            Column("user_id", Text, nullable=False),
+            Column("amount", Text, nullable=False),
+            Column("currency", Text, nullable=False),
+            Column("category", Text, nullable=False),
+            Column("note", Text, nullable=True),
+            Column("source_message", Text, nullable=False),
+            Column("timestamp", DateTime, nullable=False, server_default=text("DATETIME('now')")),
+        )
+
+        self.code_runs = Table(
+            "code_runs",
+            self.metadata,
+            Column("id", Integer, primary_key=True, autoincrement=True),
+            Column("user_id", Text, nullable=False),
+            Column("language", Text, nullable=False),
+            Column("code_snippet", Text, nullable=False),
+            Column("exit_status", Integer, nullable=False),
+            Column("runtime_ms", Integer, nullable=False),
+            Column("output", Text, nullable=True),
+            Column("timestamp", DateTime, nullable=False, server_default=text("DATETIME('now')")),
+        )
+
     def _init(self) -> None:
         """Initialize database connection and create tables."""
         data_dir = Path(self.db_path).parent
@@ -108,7 +161,13 @@ class DatabaseManager:
         with self.engine.connect() as conn:
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_messages_user_time ON messages(user_id, timestamp DESC)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_intent_user_time ON intent_logs(user_id, timestamp DESC)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tasks_user_time ON scheduled_tasks(user_id, created_at DESC)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tasks_status_due ON scheduled_tasks(status, due_at)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_expenses_user_time ON expense_logs(user_id, timestamp DESC)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_runs_user_time ON code_runs(user_id, timestamp DESC)"))
             conn.commit()
+
+        self._migrate_scheduled_tasks_table()
 
         logger.info(f"[DATABASE] Connected to {self.db_path}")
 
@@ -165,7 +224,7 @@ class DatabaseManager:
                     """
                     SELECT role, content FROM messages 
                     WHERE user_id = :user_id 
-                    ORDER BY timestamp DESC LIMIT :limit
+                    ORDER BY id DESC LIMIT :limit
                     """
                 ),
                 {"user_id": user_id, "limit": limit},
@@ -197,6 +256,166 @@ class DatabaseManager:
                     "intent": intent,
                     "topic": topic,
                     "metadata_json": json.dumps(metadata),
+                },
+            )
+            conn.commit()
+
+    def _migrate_scheduled_tasks_table(self) -> None:
+        """Apply additive migrations for scheduled_tasks columns."""
+        with self.engine.connect() as conn:
+            columns = conn.execute(text("PRAGMA table_info(scheduled_tasks)")).fetchall()
+            existing_columns = {str(row[1]) for row in columns}
+
+            if "due_at" not in existing_columns:
+                conn.execute(text("ALTER TABLE scheduled_tasks ADD COLUMN due_at DATETIME"))
+            if "frequency" not in existing_columns:
+                conn.execute(
+                    text("ALTER TABLE scheduled_tasks ADD COLUMN frequency TEXT NOT NULL DEFAULT 'once'")
+                )
+            if "delivered_at" not in existing_columns:
+                conn.execute(text("ALTER TABLE scheduled_tasks ADD COLUMN delivered_at DATETIME"))
+            conn.commit()
+
+    def save_scheduled_task(
+        self,
+        user_id: str,
+        description: str,
+        schedule_details: str,
+        due_at: datetime,
+        frequency: str = "once",
+    ) -> None:
+        """Save a scheduled task."""
+        due_at_utc = due_at.astimezone(timezone.utc).replace(tzinfo=None)
+        with self.engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO scheduled_tasks (user_id, task_description, schedule_details, due_at, frequency)
+                    VALUES (:user_id, :desc, :details, :due_at, :frequency)
+                    """
+                ),
+                {
+                    "user_id": user_id,
+                    "desc": description,
+                    "details": schedule_details,
+                    "due_at": due_at_utc,
+                    "frequency": frequency,
+                },
+            )
+            conn.commit()
+
+    def get_due_scheduled_tasks(self, limit: int = 50) -> list[ScheduledTask]:
+        """Fetch due tasks and mark them as processing to avoid duplicate delivery."""
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+
+        with self.engine.begin() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT id, user_id, task_description, schedule_details, status, due_at, frequency
+                    FROM scheduled_tasks
+                    WHERE status = 'pending' AND due_at IS NOT NULL AND due_at <= :now_utc
+                    ORDER BY due_at ASC
+                    LIMIT :limit
+                    """
+                ),
+                {"now_utc": now_utc, "limit": limit},
+            ).fetchall()
+
+            if not rows:
+                return []
+
+            task_ids = [int(row[0]) for row in rows]
+            placeholders = ", ".join([f":id_{i}" for i in range(len(task_ids))])
+            params: dict[str, Any] = {f"id_{i}": task_id for i, task_id in enumerate(task_ids)}
+            conn.execute(
+                text(
+                    f"UPDATE scheduled_tasks SET status = 'processing' WHERE id IN ({placeholders}) AND status = 'pending'"
+                ),
+                params,
+            )
+
+        return [
+            ScheduledTask(
+                id=int(row[0]),
+                user_id=str(row[1]),
+                task_description=str(row[2]),
+                schedule_details=str(row[3]),
+                status="processing",
+                due_at=str(row[5]),
+                frequency=str(row[6] or "once"),
+            )
+            for row in rows
+        ]
+
+    def mark_scheduled_task_delivered(self, task_id: int) -> None:
+        """Mark a scheduled task as delivered."""
+        with self.engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    UPDATE scheduled_tasks
+                    SET status = 'delivered', delivered_at = DATETIME('now')
+                    WHERE id = :task_id
+                    """
+                ),
+                {"task_id": task_id},
+            )
+            conn.commit()
+
+    def mark_scheduled_task_pending(self, task_id: int) -> None:
+        """Requeue a scheduled task when delivery fails."""
+        with self.engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    UPDATE scheduled_tasks
+                    SET status = 'pending'
+                    WHERE id = :task_id
+                    """
+                ),
+                {"task_id": task_id},
+            )
+            conn.commit()
+
+    def log_expense(self, user_id: str, amount: str, currency: str, category: str, note: str, source: str) -> None:
+        """Log an expense."""
+        with self.engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO expense_logs (user_id, amount, currency, category, note, source_message)
+                    VALUES (:user_id, :amount, :currency, :category, :note, :source)
+                    """
+                ),
+                {
+                    "user_id": user_id,
+                    "amount": amount,
+                    "currency": currency,
+                    "category": category,
+                    "note": note,
+                    "source": source,
+                },
+            )
+            conn.commit()
+
+    def log_code_run(self, user_id: str, language: str, code: str, exit_status: int, runtime_ms: int, output: str) -> None:
+        """Log a code execution run."""
+        with self.engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO code_runs (user_id, language, code_snippet, exit_status, runtime_ms, output)
+                    VALUES (:user_id, :language, :code, :exit_status, :runtime_ms, :output)
+                    """
+                ),
+                {
+                    "user_id": user_id,
+                    "language": language,
+                    "code": code,
+                    "exit_status": exit_status,
+                    "runtime_ms": runtime_ms,
+                    "output": output,
                 },
             )
             conn.commit()

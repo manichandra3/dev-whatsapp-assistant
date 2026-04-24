@@ -42,6 +42,7 @@ class LLMResponse:
     """Response from an LLM call."""
 
     content: str | None
+    tool_calls: list[ToolCall] = field(default_factory=list)
     finish_reason: str | None = None
     parsed_json: dict[str, Any] | None = None
 

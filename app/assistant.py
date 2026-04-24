@@ -10,6 +10,7 @@ from typing import Any
 
 from app.config import Settings
 from app.database import DatabaseManager
+from app.delivery.service import DeliveryService
 from app.llm.providers import LLMProvider, LLMResponse
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ class DevAssistantBrain:
             model=settings.llm_model,
             api_key=settings.get_llm_api_key(),
         )
+        self.delivery = DeliveryService(self.db, self.llm)
 
         logger.info(f"[ASSISTANT] Initialized with provider: {settings.llm_provider}")
 
@@ -74,29 +76,34 @@ class DevAssistantBrain:
             self.db.save_message(user_id, "assistant", json_str)
 
             # 6. Log parsed intent
+            intent = parsed_json.get("intent", "general_chat")
+            topic = parsed_json.get("topic", "unknown")
+            metadata = parsed_json.get("metadata", {})
             self.db.log_intent(
                 user_id=user_id,
                 original_message=message_text,
-                intent=parsed_json.get("intent", "general_chat"),
-                topic=parsed_json.get("topic", "unknown"),
-                metadata=parsed_json.get("metadata", {})
+                intent=intent,
+                topic=topic,
+                metadata=metadata
             )
 
-            # 7. Return minified JSON string
-            return json_str
+            # 7. Deliver action
+            reply_text = await self.delivery.deliver(
+                intent=intent,
+                topic=topic,
+                metadata=metadata,
+                user_id=user_id,
+                message_text=message_text
+            )
+
+            # 8. Return plain text reply instead of raw JSON
+            return reply_text
 
         except Exception as e:
             logger.error(f"[ASSISTANT] Error processing message: {e}")
 
-            # Fallback JSON on unhandled exception
-            fallback = {
-                "intent": "general_chat",
-                "topic": "system_error",
-                "metadata": {
-                    "response_text": "I encountered an internal error. Please try again."
-                }
-            }
-            return json.dumps(fallback, separators=(',', ':'))
+            # Return a plain text error instead of JSON fallback
+            return "❌ I encountered an internal error processing your request. Please try again."
 
     def _is_valid_intent(self, data: dict[str, Any]) -> bool:
         """Validate the JSON object has the required keys and valid intent."""

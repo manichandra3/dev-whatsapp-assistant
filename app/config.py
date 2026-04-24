@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     python_bridge_host: str = "127.0.0.1"
     python_bridge_port: int = 8000
 
+    # Reminder scheduler
+    scheduler_enabled: bool = True
+    scheduler_poll_interval_seconds: int = 30
+    scheduler_batch_size: int = 50
+    scheduler_delivery_callback_url: str = "http://127.0.0.1:3010"
+
     def get_llm_api_key(self) -> str:
         """Get the API key for the configured LLM provider."""
         provider = self.llm_provider.lower()

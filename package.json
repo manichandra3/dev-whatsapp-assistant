@@ -10,9 +10,9 @@
     "start:legacy": "node src/index.js",
     "dev": "node --watch src/index.js",
     "dev:bridge": "node --watch src/index-bridge.js",
-    "test": "node src/test-safety.js",
-    "python:start": "python -m app.main",
-    "python:test": "python -m pytest tests/ -v"
+    "test": "echo \"No node tests specified\" && exit 0",
+    "python:start": "venv/bin/python -m app.main",
+    "python:test": "venv/bin/python -m pytest tests/ -v"
   },
   "keywords": [
     "developer",

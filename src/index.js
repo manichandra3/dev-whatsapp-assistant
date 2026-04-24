@@ -99,7 +99,12 @@ class DevAssistant {
       );
 
       await this.whatsapp.sendTyping(userId, false);
-      return jsonStr;
+      
+      // Temporary Legacy mode warning instead of pure JSON or full delivery rewrite
+      // Legacy mode has not been brought to full feature parity with Python delivery
+      const legacyResponse = `🤖 Legacy Node Mode active.\n\nParsed Intent: ${parsedJSON.intent}\nTopic: ${parsedJSON.topic}\n\n*Note: Action delivery (like scheduling or code execution) is not supported in legacy mode. Please use bridge mode (npm run start:bridge).*`;
+      
+      return legacyResponse;
 
     } catch (error) {
       console.error('[ASSISTANT] Error processing message:', error);

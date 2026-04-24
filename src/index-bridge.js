@@ -6,6 +6,7 @@
  */
 
 import dotenv from 'dotenv';
+import http from 'http';
 import { WhatsAppBot } from './whatsapp-bot.js';
 import { BridgeClient } from './bridge-client.js';
 
@@ -27,6 +28,10 @@ class DevAssistantBridge {
       process.env.WHATSAPP_SESSION_PATH || './whatsapp_session',
       this.handleMessage.bind(this)
     );
+
+    this.callbackHost = process.env.BRIDGE_CALLBACK_HOST || '127.0.0.1';
+    this.callbackPort = Number(process.env.BRIDGE_CALLBACK_PORT || '3010');
+    this.callbackServer = null;
   }
 
   async handleMessage(userId, messageText) {
@@ -75,14 +80,68 @@ class DevAssistantBridge {
 
     // Connect WhatsApp
     await this.whatsapp.connect();
+    await this.startCallbackServer();
 
     console.log('\n✅ Dev Assistant (Bridge Mode) is running!');
     console.log('   WhatsApp -> Node.js -> Python Brain');
+    console.log(`   Callback endpoint: http://${this.callbackHost}:${this.callbackPort}/send`);
     console.log('   Waiting for WhatsApp messages...\n');
+  }
+
+  async startCallbackServer() {
+    if (this.callbackServer) {
+      return;
+    }
+
+    this.callbackServer = http.createServer(async (req, res) => {
+      if (req.method !== 'POST' || req.url !== '/send') {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Not found' }));
+        return;
+      }
+
+      let rawBody = '';
+      req.on('data', chunk => {
+        rawBody += chunk;
+      });
+
+      req.on('end', async () => {
+        try {
+          const payload = JSON.parse(rawBody || '{}');
+          const userId = payload.user_id;
+          const messageText = payload.message_text;
+
+          if (!userId || !messageText) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: 'user_id and message_text are required' }));
+            return;
+          }
+
+          await this.whatsapp.sendMessage(userId, messageText);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true }));
+        } catch (error) {
+          console.error('[BRIDGE] Callback delivery error:', error);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: error.message }));
+        }
+      });
+    });
+
+    await new Promise((resolve, reject) => {
+      this.callbackServer.once('error', reject);
+      this.callbackServer.listen(this.callbackPort, this.callbackHost, resolve);
+    });
+
+    console.log(`[BRIDGE] Callback server listening on ${this.callbackHost}:${this.callbackPort}`);
   }
 
   async stop() {
     console.log('\n🛑 Shutting down Dev Assistant (Bridge Mode)...');
+    if (this.callbackServer) {
+      await new Promise(resolve => this.callbackServer.close(resolve));
+      this.callbackServer = null;
+    }
     await this.whatsapp.disconnect();
     console.log('✅ Shutdown complete');
     process.exit(0);

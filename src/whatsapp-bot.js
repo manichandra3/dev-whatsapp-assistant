@@ -167,7 +167,7 @@ export class WhatsAppBot {
 
   async disconnect() {
     if (this.sock) {
-      await this.sock.logout();
+      this.sock.end(undefined);
       console.log('[WhatsApp] Disconnected');
     }
   }

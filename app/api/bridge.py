@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from app.assistant import DevAssistantBrain
 from app.config import get_settings
+from app.scheduler import ReminderScheduler
 
 logger = logging.getLogger(__name__)
 
@@ -43,16 +44,20 @@ class HealthResponse(BaseModel):
 
 # Global brain instance (initialized on startup)
 brain: DevAssistantBrain | None = None
+scheduler: ReminderScheduler | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle."""
     global brain
+    global scheduler
 
     # Startup
     settings = get_settings()
     brain = DevAssistantBrain(settings)
+    scheduler = ReminderScheduler(brain.db, settings)
+    await scheduler.start()
 
     logger.info(f"[BRIDGE] Started with provider: {settings.llm_provider}")
     logger.info(f"[BRIDGE] Model: {settings.llm_model}")
@@ -61,6 +66,8 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    if scheduler:
+        await scheduler.stop()
     if brain:
         brain.close()
     logger.info("[BRIDGE] Shutdown complete")
