@@ -112,6 +112,8 @@ class DatabaseManager:
             Column("due_at", DateTime, nullable=True),
             Column("frequency", Text, nullable=False, server_default="once"),
             Column("delivered_at", DateTime, nullable=True),
+            Column("attempt_count", Integer, nullable=False, server_default="0"),
+            Column("last_attempt_at", DateTime, nullable=True),
             Column("created_at", DateTime, nullable=False, server_default=text("DATETIME('now')")),
         )
 
@@ -274,6 +276,10 @@ class DatabaseManager:
                 )
             if "delivered_at" not in existing_columns:
                 conn.execute(text("ALTER TABLE scheduled_tasks ADD COLUMN delivered_at DATETIME"))
+            if "attempt_count" not in existing_columns:
+                conn.execute(text("ALTER TABLE scheduled_tasks ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0"))
+            if "last_attempt_at" not in existing_columns:
+                conn.execute(text("ALTER TABLE scheduled_tasks ADD COLUMN last_attempt_at DATETIME"))
             conn.commit()
 
     def save_scheduled_task(
@@ -375,6 +381,123 @@ class DatabaseManager:
                     """
                 ),
                 {"task_id": task_id},
+            )
+            conn.commit()
+
+    def get_user_tasks(self, user_id: str, status: str = "pending") -> list[ScheduledTask]:
+        """Get all tasks for a user with given status."""
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT id, user_id, task_description, schedule_details, status, due_at, frequency
+                    FROM scheduled_tasks
+                    WHERE user_id = :user_id AND status = :status
+                    ORDER BY due_at ASC
+                    """
+                ),
+                {"user_id": user_id, "status": status},
+            ).fetchall()
+
+            return [
+                ScheduledTask(
+                    id=int(row[0]),
+                    user_id=str(row[1]),
+                    task_description=str(row[2]),
+                    schedule_details=str(row[3]),
+                    status=str(row[4]),
+                    due_at=str(row[5]),
+                    frequency=str(row[6] or "once"),
+                )
+                for row in rows
+            ]
+
+    def cancel_scheduled_task(self, task_id: int, user_id: str) -> bool:
+        """Cancel a scheduled task. Returns True if cancelled, False if not found."""
+        with self.engine.connect() as conn:
+            result = conn.execute(
+                text(
+                    """
+                    UPDATE scheduled_tasks
+                    SET status = 'cancelled'
+                    WHERE id = :task_id AND user_id = :user_id AND status = 'pending'
+                    """
+                ),
+                {"task_id": task_id, "user_id": user_id},
+            )
+            conn.commit()
+            return result.rowcount > 0
+
+    def mark_scheduled_task_failed(self, task_id: int) -> None:
+        """Mark a task as failed (dead-letter)."""
+        with self.engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    UPDATE scheduled_tasks
+                    SET status = 'failed'
+                    WHERE id = :task_id
+                    """
+                ),
+                {"task_id": task_id},
+            )
+            conn.commit()
+
+    def is_task_already_delivered(self, task_id: int) -> bool:
+        """Check if a task has already been delivered (idempotency)."""
+        with self.engine.connect() as conn:
+            result = conn.execute(
+                text(
+                    """
+                    SELECT status FROM scheduled_tasks WHERE id = :task_id
+                    """
+                ),
+                {"task_id": task_id},
+            ).fetchone()
+            return result is not None and result[0] == "delivered"
+
+    def increment_task_attempt(self, task_id: int) -> None:
+        """Increment the attempt count for a task."""
+        with self.engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    UPDATE scheduled_tasks
+                    SET attempt_count = attempt_count + 1,
+                        last_attempt_at = DATETIME('now')
+                    WHERE id = :task_id
+                    """
+                ),
+                {"task_id": task_id},
+            )
+            conn.commit()
+
+    def get_task_attempt_count(self, task_id: int) -> int:
+        """Get the current attempt count for a task."""
+        with self.engine.connect() as conn:
+            result = conn.execute(
+                text(
+                    """
+                    SELECT attempt_count FROM scheduled_tasks WHERE id = :task_id
+                    """
+                ),
+                {"task_id": task_id},
+            ).fetchone()
+            return int(result[0]) if result else 0
+
+    def requeue_scheduled_task_with_delay(self, task_id: int, delay_minutes: int) -> None:
+        """Requeue a task with a delay (update due_at and set status back to pending)."""
+        with self.engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    UPDATE scheduled_tasks
+                    SET status = 'pending',
+                        due_at = DATETIME(due_at, '+' || :delay || ' minutes')
+                    WHERE id = :task_id
+                    """
+                ),
+                {"task_id": task_id, "delay": delay_minutes},
             )
             conn.commit()
 

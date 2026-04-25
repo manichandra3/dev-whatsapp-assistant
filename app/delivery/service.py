@@ -33,13 +33,17 @@ class DeliveryService:
             elif intent == "log_expense":
                 return await self._handle_log_expense(user_id, topic, metadata, message_text)
             elif intent == "execute_code":
-                return await self._handle_execute_code(user_id, topic, metadata)
+                return await self._handle_execute_code(user_id, topic, metadata, message_text)
             elif intent == "debug_code":
                 return await self._handle_debug_code(user_id, topic, metadata)
             elif intent == "summarize_link":
                 return await self._handle_summarize_link(user_id, topic, metadata)
             elif intent == "general_chat":
                 return await self._handle_general_chat(user_id, message_text)
+            elif intent == "list_tasks":
+                return await self._handle_list_tasks(user_id, topic, metadata)
+            elif intent == "cancel_task":
+                return await self._handle_cancel_task(user_id, topic, metadata)
             else:
                 return f"I understood you wanted to '{intent}', but I haven't learned how to do that yet."
                 
@@ -49,13 +53,27 @@ class DeliveryService:
 
     async def _handle_schedule_task(self, user_id: str, topic: str, metadata: dict[str, Any]) -> str:
         desc = metadata.get("task", topic)
-        time_value = metadata.get("time")
+        
+        time_val = metadata.get("time")
+        date_val = metadata.get("date")
+        datetime_val = metadata.get("datetime")
+        
+        time_str = ""
+        if datetime_val:
+            time_str = str(datetime_val)
+        elif date_val and time_val:
+            time_str = f"{date_val} {time_val}"
+        elif time_val:
+            time_str = str(time_val)
+        elif date_val:
+            time_str = str(date_val)
+            
         freq = metadata.get("frequency")
 
-        if not time_value:
+        if not time_str:
             return f"I can help schedule '{desc}'. What time would you like to be reminded?"
 
-        due_at = self._parse_due_time(str(time_value))
+        due_at = self._parse_due_time(time_str)
         if not due_at:
             return (
                 f"I can schedule '{desc}', but I need an exact date/time. "
@@ -63,7 +81,7 @@ class DeliveryService:
             )
 
         freq_str = freq if freq else "once"
-        details = f"Time: {time_value}, Frequency: {freq_str}"
+        details = f"Time: {time_str}, Frequency: {freq_str}"
 
         self.db.save_scheduled_task(user_id, desc, details, due_at, freq_str)
         return f"✅ Got it. I'll remind you to '{desc}' ({details})."
@@ -89,6 +107,14 @@ class DeliveryService:
                     continue
 
         if parsed is None:
+            # Try natural language parsing with dateparser
+            try:
+                import dateparser
+                parsed = dateparser.parse(value, settings={'TIMEZONE': 'UTC', 'RETURN_AS_TIMEZONE_AWARE': True, 'PREFER_DATES_FROM': 'future'})
+            except Exception:
+                parsed = None
+
+        if parsed is None:
             return None
 
         if parsed.tzinfo is None:
@@ -105,13 +131,32 @@ class DeliveryService:
         self.db.log_expense(user_id, amount, currency, category, note, message_text)
         return f"💸 Logged expense: {amount} {currency} for {category}."
 
-    async def _handle_execute_code(self, user_id: str, topic: str, metadata: dict[str, Any]) -> str:
+    async def _handle_execute_code(self, user_id: str, topic: str, metadata: dict[str, Any], message_text: str) -> str:
         code = metadata.get("code", "")
         language = metadata.get("language", "python").lower()
         
         if language != "python":
             return f"I currently only support executing Python code, but you asked for {language}."
             
+        if not code and message_text:
+            # Fallback: Try to extract code from message_text if LLM didn't provide it
+            import re
+            
+            # Try to find a markdown code block first
+            match = re.search(r'```(?:python|py)?\n(.*?)\n?```', message_text, re.DOTALL)
+            if match:
+                code = match.group(1).strip()
+            else:
+                # If no code block, filter out obvious conversational prefix lines
+                lines = message_text.split('\n')
+                code_lines = []
+                for line in lines:
+                    low = line.lower().strip()
+                    if low.startswith("can you ") or low.startswith("please run ") or low.startswith("run this ") or low.startswith("execute this "):
+                        continue
+                    code_lines.append(line)
+                code = '\n'.join(code_lines).strip()
+                
         if not code:
             return "I couldn't find the code snippet to execute."
             
@@ -131,7 +176,9 @@ class DeliveryService:
         
         try:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-                f.write(code)
+                # Inject resource limits to restrict memory to 128MB
+                limit_code = "import resource\ntry:\n    resource.setrlimit(resource.RLIMIT_AS, (128 * 1024 * 1024, 128 * 1024 * 1024))\nexcept Exception:\n    pass\n"
+                f.write(limit_code + code)
                 temp_path = f.name
                 
             try:
@@ -198,13 +245,42 @@ class DeliveryService:
                 return f"I can only summarize valid HTTP/HTTPS URLs, but received: {url}"
             try:
                 import urllib.request
-                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, timeout=10) as response:
+                import socket
+                
+                req = urllib.request.Request(
+                    url, 
+                    headers={'User-Agent': 'Mozilla/5.0 (compatible; DevAssistant/1.0)'}
+                )
+                socket.setdefaulttimeout(15)
+                
+                ctx = urllib.request.urlopen(req, timeout=15)
+                with ctx as response:
+                    final_url = response.geturl()
+                    if final_url != url and final_url.count('/') > url.count('/') + 10:
+                        return "The URL appears to have too many redirects. Please provide a direct link."
+                    
                     content_type = response.headers.get('Content-Type', '').lower()
                     if 'text/html' not in content_type and 'text/plain' not in content_type:
                         return f"I can only summarize text-based webpages, but the link points to a non-text type: {content_type}"
                     
-                    content_to_summarize = response.read().decode('utf-8')[:10000] # Cap length to 10000
+                    content_length = response.headers.get('Content-Length')
+                    if content_length:
+                        try:
+                            if int(content_length) > 100_000:
+                                return "The linked content is too large to summarize. Please provide a smaller document or direct text."
+                        except ValueError:
+                            pass
+                    
+                    raw_data = response.read(50_000)
+                    content_to_summarize = raw_data.decode('utf-8', errors='ignore')[:10000]
+                    
+                    if not content_to_summarize.strip():
+                        return "I couldn't extract any readable text from the link."
+                        
+            except ValueError as e:
+                return f"Invalid URL format: {e}"
+            except TimeoutError:
+                return "The request timed out while fetching the link. Please try again or provide the text directly."
             except Exception as e:
                 return f"I couldn't fetch the link: {e}"
                 
@@ -232,3 +308,35 @@ class DeliveryService:
             
         response = await self.llm.chat(messages)
         return str(response.content)
+
+    async def _handle_list_tasks(self, user_id: str, topic: str, metadata: dict[str, Any]) -> str:
+        """List all pending tasks for the user."""
+        tasks = self.db.get_user_tasks(user_id, status="pending")
+        
+        if not tasks:
+            return "You have no pending tasks."
+        
+        lines = [f"📋 You have {len(tasks)} pending task(s):"]
+        for i, task in enumerate(tasks, 1):
+            due_str = task.due_at if task.due_at else "no due date"
+            lines.append(f"{i}. {task.task_description} (due: {due_str}, freq: {task.frequency})")
+        
+        return "\n".join(lines)
+
+    async def _handle_cancel_task(self, user_id: str, topic: str, metadata: dict[str, Any]) -> str:
+        """Cancel a specific task by ID."""
+        # Try to extract task ID from metadata or topic
+        task_id = metadata.get("task_id")
+        if not task_id:
+            # Try to parse from topic (e.g., "cancel 3")
+            import re
+            match = re.search(r'(\d+)', str(topic))
+            if match:
+                task_id = int(match.group(1))
+            else:
+                return "I couldn't find a task ID to cancel. Please specify which task (e.g., 'cancel task 3')."
+        
+        if self.db.cancel_scheduled_task(int(task_id), user_id):
+            return f"✅ Task {task_id} has been cancelled."
+        else:
+            return f"❌ Couldn't find pending task {task_id}. It may have already been delivered or cancelled."

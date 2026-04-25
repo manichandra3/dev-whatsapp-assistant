@@ -7,7 +7,7 @@ A Developer's WhatsApp Assistant Brain (via Baileys) and AI (OpenAI/Anthropic/Go
 ## 🎯 Features
 
 ### 🧠 Intent Routing
-- **Strict JSON Generation**: Evaluates user intent into `schedule_task`, `execute_code`, `debug_code`, `summarize_link`, `log_expense`, or `general_chat`
+- **Strict JSON Generation**: Evaluates user intent into `schedule_task`, `execute_code`, `debug_code`, `summarize_link`, `log_expense`, `general_chat`, `list_tasks`, or `cancel_task`
 - **Fallback Catch**: "Silent Catch" gracefully degrades parsing failures into conversational apologies
 - **Dual Stack Support**: Run in pure Node.js or via the Python bridge for future Python-native agent tooling
 
@@ -75,6 +75,13 @@ OPENAI_API_KEY=sk-...
 DATABASE_PATH=./data/dev_assistant.db
 WHATSAPP_SESSION_PATH=./whatsapp_session
 LOG_LEVEL=info
+
+# Reminder Scheduler (optional)
+SCHEDULER_ENABLED=true
+SCHEDULER_POLL_INTERVAL_SECONDS=30
+SCHEDULER_BATCH_SIZE=50
+SCHEDULER_DELIVERY_CALLBACK_URL=http://127.0.0.1:3010
+SCHEDULER_CALLBACK_SECRET=your-secret  # Optional: HMAC secret for callback security
 ```
 
 ### Step 3: Start the Services

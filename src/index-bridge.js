@@ -7,6 +7,7 @@
 
 import dotenv from 'dotenv';
 import http from 'http';
+import crypto from 'crypto';
 import { WhatsAppBot } from './whatsapp-bot.js';
 import { BridgeClient } from './bridge-client.js';
 
@@ -107,6 +108,33 @@ class DevAssistantBridge {
 
       req.on('end', async () => {
         try {
+          const secret = process.env.SCHEDULER_CALLBACK_SECRET;
+          if (secret) {
+            const signatureHeader = req.headers['x-hub-signature-256'];
+            if (!signatureHeader || !signatureHeader.startsWith('sha256=')) {
+              res.writeHead(401, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, error: 'Missing or invalid signature header' }));
+              return;
+            }
+            const signature = signatureHeader.slice(7);
+            const expectedSignature = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+            
+            // Perform constant-time string comparison
+            let isValid = false;
+            try {
+               isValid = crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature));
+            } catch (e) {
+               // lengths might differ
+               isValid = false;
+            }
+
+            if (!isValid) {
+              res.writeHead(401, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, error: 'Invalid signature' }));
+              return;
+            }
+          }
+
           const payload = JSON.parse(rawBody || '{}');
           const userId = payload.user_id;
           const messageText = payload.message_text;

@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     scheduler_poll_interval_seconds: int = 30
     scheduler_batch_size: int = 50
     scheduler_delivery_callback_url: str = "http://127.0.0.1:3010"
+    scheduler_callback_secret: str | None = None
 
     def get_llm_api_key(self) -> str:
         """Get the API key for the configured LLM provider."""
