@@ -29,6 +29,7 @@
     "@whiskeysockets/baileys": "^6.7.8",
     "better-sqlite3": "^11.5.0",
     "dotenv": "^16.4.7",
+    "express": "^5.2.1",
     "openai": "^4.77.3",
     "pino": "^9.5.0",
     "pino-pretty": "^13.1.3",

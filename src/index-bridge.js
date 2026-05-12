@@ -6,6 +6,7 @@
  */
 
 import dotenv from 'dotenv';
+import express from 'express';
 import { WhatsAppBot } from './whatsapp-bot.js';
 import { BridgeClient } from './bridge-client.js';
 
@@ -27,6 +28,26 @@ class ACLRehabCoachBridge {
       process.env.WHATSAPP_SESSION_PATH || './whatsapp_session',
       this.handleMessage.bind(this)
     );
+
+    // Initialize Express Server
+    this.app = express();
+    this.app.use(express.json());
+    
+    // Set up the push endpoint
+    this.app.post('/api/send-message', async (req, res) => {
+      const { userId, messageText } = req.body;
+      if (!userId || !messageText) {
+        return res.status(400).json({ error: 'Missing userId or messageText' });
+      }
+
+      try {
+        await this.whatsapp.sendMessage(userId, messageText);
+        res.status(200).json({ success: true });
+      } catch (error) {
+        console.error('[BRIDGE] Error sending push message:', error);
+        res.status(500).json({ error: error.message });
+      }
+    });
   }
 
   async handleMessage(userId, messageText) {
@@ -76,6 +97,12 @@ class ACLRehabCoachBridge {
     // Connect WhatsApp
     await this.whatsapp.connect();
 
+    // Start Express server
+    const port = process.env.BRIDGE_PORT || 3000;
+    this.server = this.app.listen(port, () => {
+      console.log(`\n🚀 [BRIDGE] Express push server listening on port ${port}`);
+    });
+
     console.log('\n✅ ACL Rehab Coach (Bridge Mode) is running!');
     console.log('   WhatsApp -> Node.js -> Python Coach');
     console.log('   Waiting for WhatsApp messages...\n');
@@ -83,6 +110,10 @@ class ACLRehabCoachBridge {
 
   async stop() {
     console.log('\n🛑 Shutting down ACL Rehab Coach (Bridge Mode)...');
+    if (this.server) {
+      this.server.close();
+      console.log('[BRIDGE] Express server closed');
+    }
     await this.whatsapp.disconnect();
     console.log('✅ Shutdown complete');
     process.exit(0);

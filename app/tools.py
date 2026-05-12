@@ -7,18 +7,25 @@ Provides structured tools that the LLM can call to:
 3. Access patient history
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
+from sqlalchemy import text
+
 from app.database import DatabaseManager
+from app.scheduler import get_scheduler, send_scheduled_reminder
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class RecoveryPhaseResult:
     """Result of get_recovery_phase calculation."""
 
-    success: bool = True
     error: bool = False
     message: str | None = None
     weeks_post_op: int | None = None
@@ -35,7 +42,7 @@ class RecoveryPhaseResult:
         if self.error:
             return {"error": True, "message": self.message}
         return {
-            "success": self.success,
+            "success": True,
             "weeksPostOp": self.weeks_post_op,
             "daysPostOp": self.days_post_op,
             "phase": self.phase,
@@ -67,7 +74,6 @@ class ACLRehabTools:
             user_config = self.db.get_user_config(user_id)
             if not user_config or not user_config.surgery_date:
                 return RecoveryPhaseResult(
-                    success=False,
                     error=True,
                     message="Surgery date not configured. Please set your surgery date first.",
                 )
@@ -109,7 +115,7 @@ class ACLRehabTools:
                 "Independent straight leg raise",
             ]
 
-        elif weeks_post_op >= 2 and weeks_post_op < 6:
+        elif weeks_post_op < 6:
             # Phase 2: 2-6 weeks
             phase = "Phase 2"
             phase_name = "Early Strengthening"
@@ -136,7 +142,7 @@ class ACLRehabTools:
                 "Reduce swelling to minimal",
             ]
 
-        elif weeks_post_op >= 6 and weeks_post_op < 12:
+        elif weeks_post_op < 12:
             # Phase 3: 6-12 weeks
             phase = "Phase 3"
             phase_name = "Progressive Loading"
@@ -190,7 +196,6 @@ class ACLRehabTools:
             ]
 
         return RecoveryPhaseResult(
-            success=True,
             weeks_post_op=weeks_post_op,
             days_post_op=days_diff,
             phase=phase,
@@ -234,18 +239,6 @@ class ACLRehabTools:
         surgeon_name: str | None = None,
         surgery_type: str = "ACL Reconstruction",
     ) -> dict[str, Any]:
-        """
-        Set or update the user's surgery date.
-
-        Args:
-            user_id: WhatsApp user ID
-            surgery_date: Surgery date in YYYY-MM-DD format
-            surgeon_name: Optional surgeon name
-            surgery_type: Type of surgery (default: ACL Reconstruction)
-
-        Returns:
-            Success/error result with confirmation message
-        """
         # Validate date format
         try:
             parsed_date = datetime.strptime(surgery_date, "%Y-%m-%d").date()
@@ -279,7 +272,7 @@ class ACLRehabTools:
 
         # Calculate current phase for confirmation
         weeks_post_op = days_diff // 7 if days_diff >= 0 else 0
-        
+
         if days_diff < 0:
             phase_info = f"Your surgery is scheduled in {-days_diff} days."
         else:
@@ -296,6 +289,81 @@ class ACLRehabTools:
                 "daysPostOp": days_diff if days_diff >= 0 else None,
             },
         }
+
+    def build_user_context(self, user_id: str) -> str | None:
+        """Build context string with user's surgery date and latest metrics for LLM injection."""
+        context_parts = []
+
+        user_config = self.db.get_user_config(user_id)
+        if user_config and user_config.surgery_date:
+            try:
+                surgery = datetime.strptime(user_config.surgery_date, "%Y-%m-%d").date()
+                today = date.today()
+                days_post_op = (today - surgery).days
+                weeks_post_op = days_post_op // 7
+
+                if days_post_op >= 0:
+                    if weeks_post_op < 2:
+                        phase = "Phase 1 (Protection & Initial Recovery)"
+                    elif weeks_post_op < 6:
+                        phase = "Phase 2 (Early Strengthening)"
+                    elif weeks_post_op < 12:
+                        phase = "Phase 3 (Progressive Loading)"
+                    else:
+                        phase = "Phase 4 (Return to Sport Preparation)"
+
+                    context_parts.append(
+                        f"[USER CONTEXT]\n"
+                        f"Surgery Date: {user_config.surgery_date}\n"
+                        f"Days Post-Op: {days_post_op}\n"
+                        f"Weeks Post-Op: {weeks_post_op}\n"
+                        f"Current Phase: {phase}"
+                    )
+                else:
+                    context_parts.append(
+                        f"[USER CONTEXT]\n"
+                        f"Scheduled Surgery Date: {user_config.surgery_date}\n"
+                        f"Days Until Surgery: {-days_post_op}"
+                    )
+
+                if user_config.surgeon_name:
+                    context_parts.append(f"Surgeon: {user_config.surgeon_name}")
+                if user_config.surgery_type:
+                    context_parts.append(f"Surgery Type: {user_config.surgery_type}")
+
+            except ValueError:
+                pass
+
+        latest_metrics = self.db.get_latest_metrics(user_id)
+        if latest_metrics:
+            context_parts.append(
+                f"\n[LATEST CHECK-IN ({latest_metrics.date})]\n"
+                f"Pain Level: {latest_metrics.pain_level}/10\n"
+                f"Swelling: {latest_metrics.swelling_status}\n"
+                f"ROM Extension: {latest_metrics.rom_extension}°\n"
+                f"ROM Flexion: {latest_metrics.rom_flexion}°\n"
+                f"Exercise Adherence: {'Yes' if latest_metrics.adherence else 'No'}"
+            )
+            if latest_metrics.notes:
+                context_parts.append(f"Notes: {latest_metrics.notes}")
+
+        trends = self.db.get_metrics_trends(user_id, 7)
+        if trends:
+            trend_str = []
+            if trends.pain_trend != 0:
+                trend_str.append(
+                    f"Pain {'↑' if trends.pain_trend > 0 else '↓'}{abs(trends.pain_trend)}"
+                )
+            if trends.rom_flexion_trend != 0:
+                trend_str.append(
+                    f"Flexion {'↑' if trends.rom_flexion_trend > 0 else '↓'}{abs(trends.rom_flexion_trend)}°"
+                )
+            if trends.adherence_rate < 1.0:
+                trend_str.append(f"Adherence: {trends.adherence_rate:.0%}")
+            if trend_str:
+                context_parts.append(f"7-Day Trends: {', '.join(trend_str)}")
+
+        return "\n".join(context_parts) if context_parts else None
 
     def get_tool_definitions(self) -> list[dict[str, Any]]:
         """Get formatted tools list for LLM."""
@@ -388,6 +456,144 @@ class ACLRehabTools:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "set_reminder",
+                    "description": "Sets a proactive reminder for medication, water, or other tasks. Automatically appends 'Reply Done' to prompt user interaction.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task": {
+                                "type": "string",
+                                "description": "The task to remind the user about (e.g. 'Take Ibuprofen', 'Drink Water')",
+                            },
+                            "schedule_type": {
+                                "type": "string",
+                                "enum": ["daily", "interval"],
+                                "description": "Whether the reminder is at a specific time daily or on an interval",
+                            },
+                            "time_value": {
+                                "type": "string",
+                                "description": "If schedule_type is 'daily', provide time in HH:MM format (24-hour). If 'interval', provide decimal hours (minimum 0.25, e.g. '2.5' for every 2.5 hours).",
+                            },
+                        },
+                        "required": ["task", "schedule_type", "time_value"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "log_adherence",
+                    "description": "Logs when the user replies 'Done' to a proactive reminder (like taking medication or doing a task).",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task": {
+                                "type": "string",
+                                "description": "The task that the user completed (e.g. 'Take Ibuprofen')",
+                            },
+                            "status": {
+                                "type": "string",
+                                "enum": ["completed", "missed"],
+                                "description": "Status of the task. Usually 'completed' if they replied 'Done'.",
+                            },
+                        },
+                        "required": ["task", "status"],
+                    },
+                },
+            },
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_reminders",
+                    "description": "Lists all active reminders for the user. Call this to show the user their current reminders.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "delete_reminder",
+                    "description": "Deletes a specific reminder by its ID.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "reminder_id": {
+                                "type": "string",
+                                "description": "The unique ID of the reminder to delete."
+                            }
+                        },
+                        "required": ["reminder_id"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "pause_reminder",
+                    "description": "Pauses a specific active reminder by its ID.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "reminder_id": {
+                                "type": "string",
+                                "description": "The unique ID of the reminder to pause."
+                            }
+                        },
+                        "required": ["reminder_id"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "resume_reminder",
+                    "description": "Resumes a specific paused reminder by its ID.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "reminder_id": {
+                                "type": "string",
+                                "description": "The unique ID of the reminder to resume."
+                            }
+                        },
+                        "required": ["reminder_id"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "update_reminder",
+                    "description": "Updates the schedule of an existing reminder.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "reminder_id": {
+                                "type": "string",
+                                "description": "The unique ID of the reminder to update."
+                            },
+                            "schedule_type": {
+                                "type": "string",
+                                "enum": ["daily", "interval"],
+                                "description": "Whether the reminder is at a specific time daily or on an interval"
+                            },
+                            "time_value": {
+                                "type": "string",
+                                "description": "If schedule_type is 'daily', provide time in HH:MM format (24-hour). If 'interval', provide decimal hours."
+                            }
+                        },
+                        "required": ["reminder_id", "schedule_type", "time_value"],
+                    },
+                },
+            },
         ]
 
     async def execute_tool(
@@ -414,5 +620,248 @@ class ACLRehabTools:
         elif tool_name == "get_recovery_phase":
             result = self.get_recovery_phase(user_id)
             return result.to_dict()
+        elif tool_name == "set_reminder":
+            return self.set_reminder(
+                user_id=user_id,
+                task=args["task"],
+                schedule_type=args["schedule_type"],
+                time_value=args["time_value"],
+            )
+        
+        elif tool_name == "list_reminders":
+            return self.list_reminders(user_id)
+        elif tool_name == "delete_reminder":
+            return self.delete_reminder(user_id, args["reminder_id"])
+        elif tool_name == "pause_reminder":
+            return self.pause_reminder(user_id, args["reminder_id"])
+        elif tool_name == "resume_reminder":
+            return self.resume_reminder(user_id, args["reminder_id"])
+        elif tool_name == "update_reminder":
+            return self.update_reminder(user_id, args["reminder_id"], args["schedule_type"], args["time_value"])
+        elif tool_name == "log_adherence":
+            return self.log_adherence(
+                user_id=user_id, task=args["task"], status=args["status"]
+            )
         else:
             return {"error": True, "message": f"Unknown tool: {tool_name}"}
+
+    def set_reminder(
+        self, user_id: str, task: str, schedule_type: str, time_value: str
+    ) -> dict[str, Any]:
+        """Sets a reminder using APScheduler."""
+        scheduler = get_scheduler()
+        if not scheduler:
+            return {"error": True, "message": "Scheduler not initialized"}
+
+        import uuid
+        reminder_id = str(uuid.uuid4())
+        job_id = f"rem_{reminder_id}"
+        content = f"Reminder: {task}. Reply 'Done' when you've finished."
+
+        try:
+            if schedule_type == "daily":
+                hours, minutes = map(int, time_value.split(":"))
+                trigger = CronTrigger(hour=hours, minute=minutes)
+            elif schedule_type == "interval":
+                hours = float(time_value)
+                if hours < 0.25:
+                    return {
+                        "error": True,
+                        "message": "Interval too short. Minimum interval is 0.25 hours (15 minutes).",
+                    }
+                trigger = IntervalTrigger(seconds=int(hours * 3600))
+            else:
+                return {
+                    "error": True,
+                    "message": f"Unknown schedule_type: {schedule_type}",
+                }
+
+            scheduler.add_job(
+                send_scheduled_reminder,
+                trigger=trigger,
+                args=[user_id, "reminder", content],
+                id=job_id,
+                replace_existing=True,
+            )
+
+            try:
+                engine = self.db.engine
+                if engine is None:
+                    raise RuntimeError("Database engine is not initialized")
+                with engine.connect() as conn:
+                    conn.execute(
+                        text(
+                            "INSERT INTO reminders (user_id, job_id, reminder_type, interval_expression) "
+                            "VALUES (:uid, :jid, :type, :expr)"
+                        ),
+                        {
+                            "uid": user_id,
+                            "jid": job_id,
+                            "type": task,
+                            "expr": f"{schedule_type}_{time_value}",
+                        },
+                    )
+                    conn.commit()
+            except Exception as e:
+                logger.warning(
+                    "[TOOL] Reminder job %s was scheduled, but metadata persistence failed: %s",
+                    job_id,
+                    e,
+                )
+
+            return {
+                "success": True,
+                "message": f"Reminder for '{task}' set successfully with ID {reminder_id}.",
+                "reminder_id": reminder_id
+            }
+        except Exception as e:
+            return {"error": True, "message": str(e)}
+
+    def list_reminders(self, user_id: str) -> dict[str, Any]:
+        """Lists all active reminders for the user."""
+        engine = self.db.engine
+        if engine is None:
+            return {"error": True, "message": "Database not initialized"}
+        
+        try:
+            with engine.connect() as conn:
+                results = conn.execute(
+                    text("SELECT job_id, reminder_type, interval_expression, is_active FROM reminders WHERE user_id = :uid AND is_active = 1"),
+                    {"uid": user_id}
+                ).fetchall()
+                
+            reminders = []
+            for row in results:
+                # job_id is like 'rem_UUID', we can return the UUID or the full job_id
+                r_id = row.job_id.replace("rem_", "") if row.job_id else "unknown"
+                reminders.append({
+                    "id": r_id,
+                    "task": row.reminder_type,
+                    "schedule": row.interval_expression,
+                    "active": bool(row.is_active)
+                })
+            
+            return {
+                "success": True,
+                "reminders": reminders,
+                "message": f"Found {len(reminders)} active reminders."
+            }
+        except Exception as e:
+            return {"error": True, "message": str(e)}
+
+    def delete_reminder(self, user_id: str, reminder_id: str) -> dict[str, Any]:
+        """Deletes a reminder from the scheduler and database."""
+        scheduler = get_scheduler()
+        job_id = f"rem_{reminder_id}"
+        
+        # Remove from scheduler
+        if scheduler and scheduler.get_job(job_id):
+            scheduler.remove_job(job_id)
+            
+        # Remove from DB
+        engine = self.db.engine
+        try:
+            with engine.connect() as conn:
+                conn.execute(
+                    text("DELETE FROM reminders WHERE user_id = :uid AND job_id = :jid"),
+                    {"uid": user_id, "jid": job_id}
+                )
+                conn.commit()
+            return {"success": True, "message": f"Reminder {reminder_id} deleted."}
+        except Exception as e:
+            return {"error": True, "message": str(e)}
+
+    def pause_reminder(self, user_id: str, reminder_id: str) -> dict[str, Any]:
+        """Pauses a reminder."""
+        scheduler = get_scheduler()
+        job_id = f"rem_{reminder_id}"
+        
+        if scheduler and scheduler.get_job(job_id):
+            scheduler.pause_job(job_id)
+            
+        engine = self.db.engine
+        try:
+            with engine.connect() as conn:
+                conn.execute(
+                    text("UPDATE reminders SET is_active = 0 WHERE user_id = :uid AND job_id = :jid"),
+                    {"uid": user_id, "jid": job_id}
+                )
+                conn.commit()
+            return {"success": True, "message": f"Reminder {reminder_id} paused."}
+        except Exception as e:
+            return {"error": True, "message": str(e)}
+
+    def resume_reminder(self, user_id: str, reminder_id: str) -> dict[str, Any]:
+        """Resumes a paused reminder."""
+        scheduler = get_scheduler()
+        job_id = f"rem_{reminder_id}"
+        
+        if scheduler and scheduler.get_job(job_id):
+            scheduler.resume_job(job_id)
+            
+        engine = self.db.engine
+        try:
+            with engine.connect() as conn:
+                conn.execute(
+                    text("UPDATE reminders SET is_active = 1 WHERE user_id = :uid AND job_id = :jid"),
+                    {"uid": user_id, "jid": job_id}
+                )
+                conn.commit()
+            return {"success": True, "message": f"Reminder {reminder_id} resumed."}
+        except Exception as e:
+            return {"error": True, "message": str(e)}
+
+    def update_reminder(self, user_id: str, reminder_id: str, schedule_type: str, time_value: str) -> dict[str, Any]:
+        """Updates the schedule of an existing reminder."""
+        scheduler = get_scheduler()
+        job_id = f"rem_{reminder_id}"
+        
+        # Get existing task to update scheduler content
+        engine = self.db.engine
+        task = "task"
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(
+                    text("SELECT reminder_type FROM reminders WHERE user_id = :uid AND job_id = :jid"),
+                    {"uid": user_id, "jid": job_id}
+                ).fetchone()
+                if result:
+                    task = result.reminder_type
+                else:
+                    return {"error": True, "message": f"Reminder {reminder_id} not found in database."}
+                    
+                if schedule_type == "daily":
+                    hours, minutes = map(int, time_value.split(":"))
+                    trigger = CronTrigger(hour=hours, minute=minutes)
+                elif schedule_type == "interval":
+                    hours = float(time_value)
+                    trigger = IntervalTrigger(seconds=int(hours * 3600))
+                else:
+                    return {"error": True, "message": f"Unknown schedule_type: {schedule_type}"}
+
+                if scheduler:
+                    # Update job trigger
+                    content = f"Reminder: {task}. Reply 'Done' when you've finished."
+                    scheduler.reschedule_job(job_id, trigger=trigger)
+                
+                # Update DB
+                conn.execute(
+                    text("UPDATE reminders SET interval_expression = :expr WHERE user_id = :uid AND job_id = :jid"),
+                    {"expr": f"{schedule_type}_{time_value}", "uid": user_id, "jid": job_id}
+                )
+                conn.commit()
+            return {"success": True, "message": f"Reminder {reminder_id} updated successfully."}
+        except Exception as e:
+            return {"error": True, "message": str(e)}
+
+    def log_adherence(self, user_id: str, task: str, status: str) -> dict[str, Any]:
+        """Logs adherence to a task."""
+        success = self.db.log_adherence(
+            user_id=user_id, reminder_type=task, status=status
+        )
+        if success:
+            return {
+                "success": True,
+                "message": f"Successfully logged {status} for {task}.",
+            }
+        return {"error": True, "message": "Failed to log adherence in database."}

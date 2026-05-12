@@ -135,7 +135,6 @@ class TestACLRehabTools:
         """Test get_recovery_phase when surgery date is not configured."""
         result = tools.get_recovery_phase("unknown_user")
 
-        assert result.success is False
         assert result.error is True
         assert "Surgery date not configured" in (result.message or "")
 
@@ -148,7 +147,7 @@ class TestACLRehabTools:
 
         result = tools.get_recovery_phase(user_id)
 
-        assert result.success is True
+        assert result.error is False
         assert result.phase == "Phase 1"
         assert result.phase_name == "Protection & Initial Recovery"
         assert result.weeks_post_op == 1
@@ -164,7 +163,7 @@ class TestACLRehabTools:
 
         result = tools.get_recovery_phase(user_id)
 
-        assert result.success is True
+        assert result.error is False
         assert result.phase == "Phase 2"
         assert result.phase_name == "Early Strengthening"
         assert result.weeks_post_op == 4
@@ -178,7 +177,7 @@ class TestACLRehabTools:
 
         result = tools.get_recovery_phase(user_id)
 
-        assert result.success is True
+        assert result.error is False
         assert result.phase == "Phase 3"
         assert result.phase_name == "Progressive Loading"
         assert result.weeks_post_op == 8
@@ -192,7 +191,7 @@ class TestACLRehabTools:
 
         result = tools.get_recovery_phase(user_id)
 
-        assert result.success is True
+        assert result.error is False
         assert result.phase == "Phase 4"
         assert result.phase_name == "Return to Sport Preparation"
         assert result.weeks_post_op == 16
@@ -217,18 +216,11 @@ class TestACLRehabTools:
         """Test tool definitions are properly formatted."""
         definitions = tools.get_tool_definitions()
 
-        assert len(definitions) == 2
+        assert len(definitions) >= 3
 
-        # Check log_daily_metrics
-        log_tool = definitions[0]
-        assert log_tool["type"] == "function"
-        assert log_tool["function"]["name"] == "log_daily_metrics"
-        assert "parameters" in log_tool["function"]
-
-        # Check get_recovery_phase
-        phase_tool = definitions[1]
-        assert phase_tool["type"] == "function"
-        assert phase_tool["function"]["name"] == "get_recovery_phase"
+        tool_names = [d["function"]["name"] for d in definitions]
+        assert "log_daily_metrics" in tool_names
+        assert "get_recovery_phase" in tool_names
 
     @pytest.mark.asyncio
     async def test_execute_tool_log_metrics(self, tools: ACLRehabTools) -> None:

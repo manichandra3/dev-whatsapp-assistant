@@ -43,17 +43,19 @@ class SafetyInterceptor:
             ),
             # Severe swelling
             re.compile(
-                r"\b(huge\s+swelling|massive\s+swelling|extreme\s+swelling|swelling\s+worse|excessive\s+swelling)\b",
+                r"\b(huge\s+swelling|massive\s+swelling|extreme\s+swelling|swelling\s+worse|excessive\s+swelling)\b"
+                r"|\bswelling\b.{0,30}\b(huge|massive|extreme|excessive)\b"
+                r"|\b(huge|massive|extreme|excessive)\b.{0,30}\bswelling\b",
                 re.IGNORECASE,
             ),
             # Severe pain
             re.compile(
-                r"\b(severe\s+pain|unbearable\s+pain|excruciating|pain\s+level\s+(9|10)|worst\s+pain)\b",
+                r"\b(severe\s+pain|unbearable\s+pain|excruciating|pain\s+level\s+(is\s+)?(9|10)|worst\s+pain)\b",
                 re.IGNORECASE,
             ),
             # Neurological symptoms
             re.compile(
-                r"\b(numbness|tingling|loss\s+of\s+feeling|can't\s+feel|nerve\s+damage)\b",
+                r"\b(numbness|numb|tingling|tingly|loss\s+of\s+feeling|can't\s+feel|nerve\s+damage)\b",
                 re.IGNORECASE,
             ),
             # Cardiovascular/respiratory emergencies
@@ -97,7 +99,7 @@ This is an automated safety alert. I cannot provide medical diagnosis or treatme
         Returns:
             SafetyCheckResult with has_red_flag, response, and matched_pattern
         """
-        if not message or not isinstance(message, str):
+        if not message:
             return SafetyCheckResult(has_red_flag=False, response=None)
 
         lower_message = message.lower()

@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     python_bridge_host: str = "127.0.0.1"
     python_bridge_port: int = 8000
 
+    # Node.js WhatsApp Bridge (for push notifications)
+    node_bridge_port: int = 3000
+
+    # Agent Runtime (legacy or langgraph)
+    agent_runtime: Literal["legacy", "langgraph"] = "legacy"
+    langgraph_max_tool_loops: int = 3
+
     def get_llm_api_key(self) -> str:
         """Get the API key for the configured LLM provider."""
         provider = self.llm_provider.lower()

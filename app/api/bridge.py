@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from app.coach import ACLRehabCoach
 from app.config import get_settings
+from app.scheduler import init_scheduler, get_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,9 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     coach = ACLRehabCoach(settings)
 
+    # Init APScheduler
+    init_scheduler(settings.database_path, settings.node_bridge_port)
+
     logger.info(f"[BRIDGE] Started with provider: {settings.llm_provider}")
     logger.info(f"[BRIDGE] Model: {settings.llm_model}")
     logger.info(f"[BRIDGE] Database: {settings.database_path}")
@@ -61,8 +65,19 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    scheduler = get_scheduler()
+    if scheduler:
+        try:
+            scheduler.shutdown(wait=False)
+            logger.info("[BRIDGE] Scheduler shutdown")
+        except Exception as e:
+            logger.warning(f"[BRIDGE] Scheduler shutdown error: {e}")
+
     if coach:
-        coach.close()
+        try:
+            coach.close()
+        except Exception as e:
+            logger.warning(f"[BRIDGE] Coach close error: {e}")
     logger.info("[BRIDGE] Shutdown complete")
 
 

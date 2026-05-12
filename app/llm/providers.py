@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import anthropic
-import google.generativeai as genai
+from google import genai
 import openai
 
 logger = logging.getLogger(__name__)
@@ -73,8 +73,7 @@ class LLMProvider:
         elif self.provider == "anthropic":
             self.client = anthropic.Anthropic(api_key=self.api_key)
         elif self.provider == "google":
-            genai.configure(api_key=self.api_key)
-            self.client = genai.GenerativeModel(self.model)
+            self.client = genai.Client(api_key=self.api_key)
         else:
             raise ValueError(f"Unsupported LLM provider: {self.provider}")
 
@@ -112,6 +111,16 @@ DAILY WORKFLOW:
    💧 Drink 2.5-3 liters of water today
    💊 Take medications after meals as prescribed
    🧊 Ice and elevate for 15-20 minutes, 3 times daily
+
+REMINDER SETUP AND MANAGEMENT:
+- After successfully calling log_daily_metrics for the FIRST time in a session, also call set_reminder to schedule recurring water reminders:
+  set_reminder(task="Drink Water", schedule_type="interval", time_value="2.0")
+- This schedules a push notification every 2 hours. Only do this once — do NOT call set_reminder on every check-in.
+- If the user asks to see their reminders (e.g. "show my reminders", "what reminders do I have"), call list_reminders and present them nicely with their IDs and schedule.
+- If the user asks to delete/stop/cancel a reminder, call delete_reminder with the corresponding ID.
+- If the user asks to pause or snooze a reminder, call pause_reminder. To unpause, call resume_reminder.
+- If the user wants to change the time/schedule of an existing reminder, call update_reminder.
+- ALWAYS provide a quick summary/confirmation to the user after taking reminder actions.
 
 TONE & STYLE:
 - Empathetic but disciplined - acknowledge their struggles while keeping them accountable
@@ -313,30 +322,26 @@ Remember: You're a supportive coach helping them stay on track with their recove
         tools: list[dict[str, Any]] | None,
     ) -> LLMResponse:
         """Chat with Google Gemini."""
-        # Convert messages to Gemini format
-        history = []
+        from google.genai import types as genai_types
+
+        contents = []
         for msg in messages:
             role = msg.get("role")
             content = msg.get("content")
-
             if role == "system":
-                # System messages handled separately in Gemini
                 continue
-            elif role == "assistant":
-                history.append({
-                    "role": "model",
-                    "parts": [{"text": str(content or "")}],
-                })
-            else:
-                history.append({
-                    "role": "user",
-                    "parts": [{"text": str(content or "")}],
-                })
+            gemini_role = "model" if role == "assistant" else "user"
+            contents.append(
+                genai_types.Content(
+                    role=gemini_role,
+                    parts=[genai_types.Part(text=str(content or ""))],
+                )
+            )
 
-        chat = self.client.start_chat(history=history[:-1] if history else [])
-
-        last_message = history[-1] if history else {"parts": [{"text": ""}]}
-        response = chat.send_message(last_message["parts"][0]["text"])
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=contents,
+        )
 
         return LLMResponse(
             content=response.text,

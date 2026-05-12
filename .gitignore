@@ -44,3 +44,5 @@ wheels/
 .venv/
 venv/
 ENV/
+*.kilo
+CLAUDE.md

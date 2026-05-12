@@ -7,9 +7,10 @@ Manages conversation history and implements the core coaching workflow.
 
 import json
 import logging
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
+from app.agent_graph import CoachGraph
 from app.config import Settings
 from app.database import DatabaseManager
 from app.llm.providers import LLMProvider, LLMResponse, ToolCall
@@ -55,7 +56,20 @@ class ACLRehabCoach:
             api_key=settings.get_llm_api_key(),
         )
 
-        logger.info(f"[COACH] Initialized with provider: {settings.llm_provider}")
+        # Initialize LangGraph if enabled
+        self.agent_graph: CoachGraph | None = None
+        if settings.agent_runtime == "langgraph":
+            self.agent_graph = CoachGraph(
+                settings=settings,
+                db=self.db,
+                tools=self.tools,
+                llm=self.llm,
+                safety=self.safety,
+                max_tool_loops=settings.langgraph_max_tool_loops,
+            )
+            logger.info(f"[COACH] Initialized with LangGraph runtime (max_tool_loops={settings.langgraph_max_tool_loops})")
+        else:
+            logger.info(f"[COACH] Initialized with legacy runtime (provider: {settings.llm_provider})")
 
     async def handle_message(self, user_id: str, message_text: str) -> str:
         """
@@ -68,6 +82,14 @@ class ACLRehabCoach:
         Returns:
             Response text to send back to the user
         """
+        # Use LangGraph if enabled
+        if self.agent_graph is not None:
+            return await self.agent_graph.run(user_id, message_text)
+
+        # Legacy implementation
+        return await self._handle_message_legacy(user_id, message_text)
+
+    async def _handle_message_legacy(self, user_id: str, message_text: str) -> str:
         logger.info(f"[COACH] Processing message from {user_id}")
 
         # STEP 1: Safety Interceptor (BEFORE LLM)
@@ -85,7 +107,7 @@ class ACLRehabCoach:
             messages = self._get_conversation_history(user_id)
 
             # STEP 3.5: Build user context and prepend to message
-            user_context = self._build_user_context(user_id)
+            user_context = self.tools.build_user_context(user_id)
             message_with_context = message_text
             if user_context:
                 message_with_context = f"{user_context}\n\n---\nUser message: {message_text}"
@@ -215,90 +237,6 @@ class ACLRehabCoach:
             return list(self.conversations[user_id])
 
         return [{"role": "system", "content": self.llm.get_system_prompt()}]
-
-    def _build_user_context(self, user_id: str) -> str | None:
-        """
-        Build context string with user's surgery date and latest metrics.
-
-        This context is prepended to every user message to give the LLM
-        relevant information for providing personalized responses.
-        """
-        context_parts = []
-
-        # Get user config (surgery date)
-        user_config = self.db.get_user_config(user_id)
-        if user_config and user_config.surgery_date:
-            try:
-                surgery = datetime.strptime(user_config.surgery_date, "%Y-%m-%d").date()
-                today = date.today()
-                days_post_op = (today - surgery).days
-                weeks_post_op = days_post_op // 7
-
-                if days_post_op >= 0:
-                    # Determine phase
-                    if weeks_post_op < 2:
-                        phase = "Phase 1 (Protection & Initial Recovery)"
-                    elif weeks_post_op < 6:
-                        phase = "Phase 2 (Early Strengthening)"
-                    elif weeks_post_op < 12:
-                        phase = "Phase 3 (Progressive Loading)"
-                    else:
-                        phase = "Phase 4 (Return to Sport Preparation)"
-
-                    context_parts.append(
-                        f"[USER CONTEXT]\n"
-                        f"Surgery Date: {user_config.surgery_date}\n"
-                        f"Days Post-Op: {days_post_op}\n"
-                        f"Weeks Post-Op: {weeks_post_op}\n"
-                        f"Current Phase: {phase}"
-                    )
-                else:
-                    # Surgery is in the future
-                    context_parts.append(
-                        f"[USER CONTEXT]\n"
-                        f"Scheduled Surgery Date: {user_config.surgery_date}\n"
-                        f"Days Until Surgery: {-days_post_op}"
-                    )
-
-                if user_config.surgeon_name:
-                    context_parts.append(f"Surgeon: {user_config.surgeon_name}")
-                if user_config.surgery_type:
-                    context_parts.append(f"Surgery Type: {user_config.surgery_type}")
-
-            except ValueError:
-                pass  # Invalid date format, skip
-
-        # Get latest metrics
-        latest_metrics = self.db.get_latest_metrics(user_id)
-        if latest_metrics:
-            context_parts.append(
-                f"\n[LATEST CHECK-IN ({latest_metrics.date})]\n"
-                f"Pain Level: {latest_metrics.pain_level}/10\n"
-                f"Swelling: {latest_metrics.swelling_status}\n"
-                f"ROM Extension: {latest_metrics.rom_extension}°\n"
-                f"ROM Flexion: {latest_metrics.rom_flexion}°\n"
-                f"Exercise Adherence: {'Yes' if latest_metrics.adherence else 'No'}"
-            )
-            if latest_metrics.notes:
-                context_parts.append(f"Notes: {latest_metrics.notes}")
-
-        # Get trends if available
-        trends = self.db.get_metrics_trends(user_id, 7)
-        if trends:
-            trend_str = []
-            if trends.pain_trend != 0:
-                trend_str.append(f"Pain {'↑' if trends.pain_trend > 0 else '↓'}{abs(trends.pain_trend)}")
-            if trends.rom_flexion_trend != 0:
-                trend_str.append(f"Flexion {'↑' if trends.rom_flexion_trend > 0 else '↓'}{abs(trends.rom_flexion_trend)}°")
-            if trends.adherence_rate < 1.0:
-                trend_str.append(f"Adherence: {trends.adherence_rate:.0%}")
-            
-            if trend_str:
-                context_parts.append(f"7-Day Trends: {', '.join(trend_str)}")
-
-        if context_parts:
-            return "\n".join(context_parts)
-        return None
 
     def _update_conversation_history(
         self, user_id: str, messages: list[dict[str, Any]]

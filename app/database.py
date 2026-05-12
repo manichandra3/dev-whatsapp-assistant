@@ -149,6 +149,30 @@ class DatabaseManager:
             ),
         )
 
+        # Reminders table
+        self.reminders = Table(
+            "reminders",
+            self.metadata,
+            Column("id", Integer, primary_key=True, autoincrement=True),
+            Column("user_id", Text, nullable=False),
+            Column("job_id", Text, nullable=True),
+            Column("reminder_type", Text, nullable=False), # water, medication, custom
+            Column("interval_expression", Text, nullable=False),
+            Column("is_active", Boolean, nullable=False, default=True),
+            Column("created_at", DateTime, nullable=False, server_default=text("DATETIME('now')")),
+        )
+
+        # Adherence logs table
+        self.adherence_logs = Table(
+            "adherence_logs",
+            self.metadata,
+            Column("id", Integer, primary_key=True, autoincrement=True),
+            Column("user_id", Text, nullable=False),
+            Column("reminder_type", Text, nullable=False),
+            Column("action_time", DateTime, nullable=False, server_default=text("DATETIME('now')")),
+            Column("status", Text, nullable=False), # completed, missed
+        )
+
     def _init(self) -> None:
         """Initialize database connection and create tables."""
         # Ensure data directory exists
@@ -178,26 +202,35 @@ class DatabaseManager:
     def _create_indexes(self) -> None:
         """Create indexes for better query performance."""
         with self.engine.connect() as conn:
-            # Index on user_id and date for daily_metrics
             conn.execute(
                 text(
-                    """
-                CREATE INDEX IF NOT EXISTS idx_daily_metrics_user_date 
-                ON daily_metrics(user_id, date DESC)
-                """
+                    "CREATE INDEX IF NOT EXISTS idx_daily_metrics_user_date "
+                    "ON daily_metrics(user_id, date DESC)"
                 )
             )
-            # Index on timestamp for daily_metrics
             conn.execute(
                 text(
-                    """
-                CREATE INDEX IF NOT EXISTS idx_daily_metrics_timestamp 
-                ON daily_metrics(timestamp DESC)
-                """
+                    "CREATE INDEX IF NOT EXISTS idx_daily_metrics_timestamp "
+                    "ON daily_metrics(timestamp DESC)"
                 )
             )
             conn.commit()
         logger.info("[DATABASE] Tables initialized")
+
+    @staticmethod
+    def _row_to_metrics(row: Any) -> DailyMetrics:
+        return DailyMetrics(
+            id=row[0],
+            user_id=row[1],
+            date=row[2],
+            timestamp=str(row[3]),
+            pain_level=row[4],
+            swelling_status=row[5],
+            rom_extension=row[6],
+            rom_flexion=row[7],
+            adherence=bool(row[8]),
+            notes=row[9],
+        )
 
     def log_daily_metrics(
         self,
@@ -295,20 +328,7 @@ class DatabaseManager:
                 {"user_id": user_id},
             ).fetchone()
 
-            if result:
-                return DailyMetrics(
-                    id=result[0],
-                    user_id=result[1],
-                    date=result[2],
-                    timestamp=str(result[3]),
-                    pain_level=result[4],
-                    swelling_status=result[5],
-                    rom_extension=result[6],
-                    rom_flexion=result[7],
-                    adherence=bool(result[8]),
-                    notes=result[9],
-                )
-            return None
+            return self._row_to_metrics(result) if result else None
 
     def get_metrics_history(self, user_id: str, days: int = 7) -> list[DailyMetrics]:
         """Get metrics history for a user (last N days)."""
@@ -325,21 +345,7 @@ class DatabaseManager:
                 {"user_id": user_id, "days": days},
             ).fetchall()
 
-            return [
-                DailyMetrics(
-                    id=row[0],
-                    user_id=row[1],
-                    date=row[2],
-                    timestamp=str(row[3]),
-                    pain_level=row[4],
-                    swelling_status=row[5],
-                    rom_extension=row[6],
-                    rom_flexion=row[7],
-                    adherence=bool(row[8]),
-                    notes=row[9],
-                )
-                for row in results
-            ]
+            return [self._row_to_metrics(row) for row in results]
 
     def get_user_config(self, user_id: str) -> UserConfig | None:
         """Get or create user configuration."""
@@ -418,6 +424,26 @@ class DatabaseManager:
             swelling_trend=swelling_trend,
             adherence_rate=adherence_rate,
         )
+
+    def log_adherence(self, user_id: str, reminder_type: str, status: str = "completed") -> bool:
+        """Log adherence to a reminder task."""
+        try:
+            with self.engine.connect() as conn:
+                conn.execute(
+                    text(
+                        """
+                    INSERT INTO adherence_logs (user_id, reminder_type, status)
+                    VALUES (:user_id, :reminder_type, :status)
+                    """
+                    ),
+                    {"user_id": user_id, "reminder_type": reminder_type, "status": status},
+                )
+                conn.commit()
+            logger.info(f"[DATABASE] Logged adherence for {user_id}: {reminder_type} ({status})")
+            return True
+        except Exception as e:
+            logger.error(f"[DATABASE] Error logging adherence: {e}")
+            return False
 
     def close(self) -> None:
         """Close database connection."""
