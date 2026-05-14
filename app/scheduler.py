@@ -76,29 +76,47 @@ async def send_scheduled_reminder(
     try:
         from app.database import DatabaseManager
         from app.config import get_settings
-        db = DatabaseManager()
         settings = get_settings()
+        db = DatabaseManager(settings.database_path)
 
         engine = db.get_engine_or_raise()
         with engine.connect() as conn:
-            user = conn.execute(text("SELECT * FROM user_config WHERE user_id = :uid"), {"uid": user_id}).fetchone()
+            user = conn.execute(
+                text(
+                    """
+                    SELECT
+                        whatsapp_reminder_opt_in,
+                        last_user_message_at,
+                        messages_sent_today,
+                        last_sent_date
+                    FROM user_config
+                    WHERE user_id = :uid
+                    """
+                ),
+                {"uid": user_id},
+            ).fetchone()
             
             # Rate limiting / Safeguards
             if user:
-                col_names = [c[0] for c in conn.execute(text("PRAGMA table_info(user_config)")).fetchall()]
+                row = user._mapping
+                last_msg_raw = row.get("last_user_message_at")
+                opt_in = bool(row.get("whatsapp_reminder_opt_in") or False)
+                messages_sent_today = int(row.get("messages_sent_today") or 0)
+                last_sent_date = row.get("last_sent_date")
                 last_msg = None
-                opt_in = False
-                messages_sent_today = 0
-                last_sent_date = None
-                
-                if 'last_user_message_at' in col_names and user[col_names.index('last_user_message_at')]:
-                    last_msg = datetime.fromisoformat(user[col_names.index('last_user_message_at')])
-                if 'whatsapp_reminder_opt_in' in col_names:
-                    opt_in = bool(user[col_names.index('whatsapp_reminder_opt_in')])
-                if 'messages_sent_today' in col_names:
-                    messages_sent_today = user[col_names.index('messages_sent_today')]
-                if 'last_sent_date' in col_names:
-                    last_sent_date = user[col_names.index('last_sent_date')]
+
+                if last_msg_raw:
+                    if isinstance(last_msg_raw, datetime):
+                        last_msg = last_msg_raw
+                    else:
+                        try:
+                            last_msg = datetime.fromisoformat(str(last_msg_raw))
+                        except ValueError:
+                            last_msg = datetime.strptime(str(last_msg_raw), "%Y-%m-%d %H:%M:%S")
+                    if last_msg.tzinfo is None:
+                        last_msg = last_msg.replace(tzinfo=timezone.utc)
+                    else:
+                        last_msg = last_msg.astimezone(timezone.utc)
                     
                 today_str = datetime.now(timezone.utc).date().isoformat()
                 
@@ -114,7 +132,8 @@ async def send_scheduled_reminder(
                     return
                     
                 if last_msg:
-                    delta = datetime.now(timezone.utc) - last_msg.replace(tzinfo=timezone.utc) if last_msg.tzinfo is None else last_msg
+                    now = datetime.now(timezone.utc)
+                    delta = now - last_msg
                     if delta > timedelta(hours=24) and not settings.whatsapp_business_api_mode:
                         logger.warning(f"[SCHEDULER] User {user_id} outside 24h window, skipping")
                         return
@@ -173,4 +192,3 @@ async def send_scheduled_reminder(
             logger.info(f"[SCHEDULER] Successfully pushed reminder to {user_id}")
     except Exception as e:
         logger.exception(f"[SCHEDULER] Failed to push reminder to {user_id}: {e}")
-

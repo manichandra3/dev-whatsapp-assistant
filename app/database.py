@@ -516,24 +516,25 @@ class DatabaseManager:
             ).fetchone()
 
             if result:
+                row = result._mapping
                 return UserConfig(
-                    user_id=result[0],
-                    surgery_date=result[1],
-                    surgeon_name=result[2],
-                    surgery_type=result[3],
-                    gamification_opt_in=bool(result[4]),
-                    notify_badges=bool(result[5]),
-                    timezone=result[6],
-                    goals=result[7],
-                    image_opt_in=bool(result[8]) if result[8] is not None else None,
-                    image_auto_confirm=bool(result[9]) if result[9] is not None else None,
-                    whatsapp_reminder_opt_in=bool(result[10]) if len(result) > 10 and result[10] is not None else False,
-                    opt_in_timestamp=str(result[11]) if len(result) > 11 and result[11] is not None else None,
-                    last_user_message_at=str(result[12]) if len(result) > 12 and result[12] is not None else None,
-                    messages_sent_today=int(result[13]) if len(result) > 13 and result[13] is not None else 0,
-                    last_sent_date=str(result[14]) if len(result) > 14 and result[14] is not None else None,
-                    created_at=str(result[15]) if len(result) > 15 else str(result[10]),
-                    updated_at=str(result[16]) if len(result) > 16 else str(result[11]),
+                    user_id=row["user_id"],
+                    surgery_date=row["surgery_date"],
+                    surgeon_name=row["surgeon_name"],
+                    surgery_type=row["surgery_type"],
+                    gamification_opt_in=bool(row["gamification_opt_in"]),
+                    notify_badges=bool(row["notify_badges"]),
+                    timezone=row["timezone"],
+                    goals=row["goals"],
+                    image_opt_in=bool(row["image_opt_in"]) if row["image_opt_in"] is not None else None,
+                    image_auto_confirm=bool(row["image_auto_confirm"]) if row["image_auto_confirm"] is not None else None,
+                    whatsapp_reminder_opt_in=bool(row.get("whatsapp_reminder_opt_in") or False),
+                    opt_in_timestamp=str(row.get("opt_in_timestamp")) if row.get("opt_in_timestamp") is not None else None,
+                    last_user_message_at=str(row.get("last_user_message_at")) if row.get("last_user_message_at") is not None else None,
+                    messages_sent_today=int(row.get("messages_sent_today") or 0),
+                    last_sent_date=str(row.get("last_sent_date")) if row.get("last_sent_date") is not None else None,
+                    created_at=str(row.get("created_at")) if row.get("created_at") is not None else None,
+                    updated_at=str(row.get("updated_at")) if row.get("updated_at") is not None else None,
                 )
             return None
 

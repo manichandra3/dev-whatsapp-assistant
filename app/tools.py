@@ -911,7 +911,7 @@ Do not include any text outside the JSON."""
             reminders = []
             for row in results:
                 job_id = row.job_id
-                r_id = str(row.id)
+                r_id = job_id.replace("rem_", "") if job_id else str(row.id)
                 friendly = "Unknown schedule"
                 next_run = "No job"
 
