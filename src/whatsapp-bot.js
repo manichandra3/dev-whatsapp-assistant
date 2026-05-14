@@ -22,6 +22,13 @@ export class WhatsAppBot {
     this.sock = null;
     this.qr = null;
     
+    // Rate limiting (Token Bucket per account)
+    this.rateLimitPerMin = parseInt(process.env.WHATSAPP_SEND_RATE_LIMIT_PER_MIN || '10', 10);
+    this.tokens = this.rateLimitPerMin;
+    this.lastRefill = Date.now();
+    this.sendQueue = [];
+    this.isProcessingQueue = false;
+
     this.logger = pino({ 
       level: process.env.LOG_LEVEL || 'warn',  // Reduce Baileys internal noise
       transport: {
@@ -190,18 +197,101 @@ export class WhatsAppBot {
     return Buffer.concat(chunks);
   }
 
-  async sendMessage(jid, text) {
+  async sendMessage(jid, content, context = null) {
     if (!this.sock) {
       throw new Error('WhatsApp socket not connected');
     }
 
-    try {
-      await this.sock.sendMessage(jid, { text });
-      console.log(`✅ Sent message to ${jid}`);
-    } catch (error) {
-      console.error('[WhatsApp] Error sending message:', error);
-      throw error;
+    return new Promise((resolve, reject) => {
+      this.sendQueue.push({ jid, content, resolve, reject });
+      this.processQueue();
+    });
+  }
+
+  async processQueue() {
+    if (this.isProcessingQueue) return;
+    this.isProcessingQueue = true;
+
+    while (this.sendQueue.length > 0) {
+      // Refill tokens
+      const now = Date.now();
+      const elapsedMinutes = (now - this.lastRefill) / 60000;
+      if (elapsedMinutes >= 1) {
+        this.tokens = this.rateLimitPerMin;
+        this.lastRefill = now;
+      }
+
+      if (this.tokens <= 0) {
+        // Wait until next refill window
+        const waitTime = 60000 - ((now - this.lastRefill) % 60000);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        continue;
+      }
+
+      const { jid, content, resolve, reject } = this.sendQueue.shift();
+      this.tokens--;
+
+      try {
+        let messagePayload;
+        
+        // Handle structured vs string content
+        if (typeof content === 'string') {
+          messagePayload = { text: content };
+        } else {
+          messagePayload = this.mapPayload(content.text, content.whatsapp_payload);
+        }
+
+        const res = await this.sock.sendMessage(jid, messagePayload);
+        // Baileys returns a message ID/key - attempt to extract stanzaId
+        const stanzaId = res?.key?.id || res?.key?.remoteJid || null;
+        console.log(`✅ Sent message to ${jid} (stanzaId=${stanzaId})`);
+        resolve({ success: true, stanzaId });
+      } catch (error) {
+        console.error('[WhatsApp] Error sending message:', error);
+        reject(error);
+      }
     }
+
+    this.isProcessingQueue = false;
+  }
+
+  validateWhatsappPayload(payload) {
+    if (!payload || typeof payload !== 'object') return null;
+    const validTypes = ['text', 'buttons', 'list', 'media', 'interactive'];
+    if (!validTypes.includes(payload.type)) return null;
+    return payload;
+  }
+
+  mapPayload(text, payload) {
+    if (!payload) return { text: text || '' };
+    
+    const validPayload = this.validateWhatsappPayload(payload);
+    if (!validPayload) return { text: text || '' };
+
+    if (validPayload.type === 'buttons') {
+      return {
+        text: validPayload.text || text,
+        footer: validPayload.footer,
+        buttons: validPayload.buttons,
+        headerType: 1
+      };
+    } else if (validPayload.type === 'list') {
+      return {
+        text: validPayload.text || text,
+        title: validPayload.title,
+        buttonText: validPayload.buttonText,
+        sections: validPayload.sections
+      };
+    } else if (validPayload.type === 'media') {
+      return {
+        [validPayload.mediaType || 'image']: { url: validPayload.url },
+        caption: validPayload.caption || text
+      };
+    } else if (validPayload.type === 'interactive') {
+      return validPayload.message; // Passthrough for arbitrary interactive messages
+    }
+    
+    return { text: validPayload.text || text || '' };
   }
 
   async sendTyping(jid, isTyping = true) {

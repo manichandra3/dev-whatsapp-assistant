@@ -33,18 +33,53 @@ class ACLRehabCoachBridge {
     this.app = express();
     this.app.use(express.json());
     
+    // Health endpoint
+    this.app.get('/health', (req, res) => {
+      const connected = this.whatsapp.isConnected && this.whatsapp.isConnected();
+      if (connected) {
+        return res.status(200).json({ status: 'ok', provider: process.env.LLM_PROVIDER || 'unknown', model: process.env.LLM_MODEL || 'unknown' });
+      }
+      return res.status(503).json({ status: 'disconnected' });
+    });
+
     // Set up the push endpoint
     this.app.post('/api/send-message', async (req, res) => {
-      const { userId, messageText } = req.body;
-      if (!userId || !messageText) {
-        return res.status(400).json({ error: 'Missing userId or messageText' });
+      const { userId, messageText, whatsapp_payload, context } = req.body;
+      if (!userId) {
+        return res.status(400).json({ error: 'Missing userId' });
+      }
+      if (!messageText && !whatsapp_payload) {
+        return res.status(400).json({ error: 'Missing messageText or whatsapp_payload' });
       }
 
       try {
-        await this.whatsapp.sendMessage(userId, messageText);
-        res.status(200).json({ success: true });
+        const payload = whatsapp_payload ? { text: messageText, whatsapp_payload } : messageText;
+        const sendResult = await this.whatsapp.sendMessage(userId, payload, context);
+        // sendResult should include the stanzaId or message id from Baileys
+        const stanzaId = sendResult?.stanzaId || sendResult?.id || null;
+        res.status(200).json({ success: true, stanzaId });
       } catch (error) {
         console.error('[BRIDGE] Error sending push message:', error);
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Inbound webhook from WhatsApp library (internal listener will call handleIncomingMessage)
+    // Expose a lightweight endpoint for testing and for external forwards
+    this.app.post('/api/inbound', async (req, res) => {
+      const { from, text, contextInfo } = req.body;
+      try {
+        // Normalize payload and forward to Python bridge
+        const payload = {
+          user_id: from,
+          message_text: text,
+          context: contextInfo || null,
+        };
+        // Forward to Python bridge
+        const result = await this.bridge.client.post('/message', payload);
+        res.status(200).json(result.data);
+      } catch (error) {
+        console.error('[BRIDGE] Error forwarding inbound message:', error);
         res.status(500).json({ error: error.message });
       }
     });
@@ -63,16 +98,16 @@ class ACLRehabCoachBridge {
       await this.whatsapp.sendTyping(userId, false);
 
       if (result.success) {
-        return result.response;
+        return { text: result.response, whatsapp_payload: result.whatsapp_payload };
       } else {
         console.error(`[BRIDGE] Error from Python coach: ${result.error}`);
-        return result.response || '❌ I apologize, but I encountered a technical issue. Please try sending your message again.';
+        return { text: result.response || '❌ I apologize, but I encountered a technical issue. Please try sending your message again.' };
       }
 
     } catch (error) {
       console.error('[BRIDGE] Error handling message:', error);
       await this.whatsapp.sendTyping(userId, false);
-      return '❌ I apologize, but I encountered a technical issue. Please try sending your message again.';
+      return { text: '❌ I apologize, but I encountered a technical issue. Please try sending your message again.' };
     }
   }
 
