@@ -25,6 +25,7 @@ class MessageRequest(BaseModel):
     user_id: str = Field(..., description="WhatsApp user ID (e.g., 1234567890@s.whatsapp.net)")
     message_text: str = Field(..., description="The message content from the user")
     media: dict[str, Any] | None = None
+    context: dict[str, Any] | None = None
 
 
 class MessageResponse(BaseModel):
@@ -32,6 +33,7 @@ class MessageResponse(BaseModel):
 
     success: bool
     response: str | None = None
+    whatsapp_payload: dict[str, Any] | None = None
     error: str | None = None
 
 
@@ -151,13 +153,55 @@ async def handle_message(request: Request) -> MessageResponse:
 
         logger.info(f"[BRIDGE] Received message from {request_data.user_id}")
 
+        # Check for "done" style replies when context contains stanza id
+        ctx = request_data.context or {}
+        stanza_id = ctx.get("stanzaId") or ctx.get("stanza_id") or ctx.get("stanzaId")
+        text = request_data.message_text.strip().lower()
+        if stanza_id and text in ("done", "done.", "✓", "ok", "okay"):
+            # Match to reminder by last_stanza_id
+            try:
+                engine = coach.db.get_engine_or_raise()
+                with engine.connect() as conn:
+                    row = conn.execute(
+                        text("SELECT id, user_id FROM reminders WHERE last_stanza_id = :sid"),
+                        {"sid": stanza_id},
+                    ).fetchone()
+                    if row and row[1] == request_data.user_id:
+                        # Insert adherence log
+                        conn.execute(
+                            text(
+                                "INSERT INTO adherence_logs (user_id, reminder_type, action_time, status, reminder_id, stanza_id) VALUES (:uid, :rtype, DATETIME('now'), :status, :rid, :sid)"
+                            ),
+                            {
+                                "uid": request_data.user_id,
+                                "rtype": "reminder",
+                                "status": "done",
+                                "rid": row[0],
+                                "sid": stanza_id,
+                            },
+                        )
+                        conn.commit()
+                        return MessageResponse(success=True, response="Thanks — logged your completion of the reminder.")
+            except Exception as e:
+                logger.warning(f"[BRIDGE] Error matching done reply: {e}")
+
+        # Update last message time in DB
+        coach.db.update_last_message_time(request_data.user_id)
+
         response = await coach.handle_message(
             user_id=request_data.user_id,
             message_text=request_data.message_text,
             media=request_data.media,
+            
         )
+        
+        response_text = response
+        whatsapp_payload = None
+        if isinstance(response, tuple):
+            response_text = response[0]
+            whatsapp_payload = response[1]
 
-        return MessageResponse(success=True, response=response)
+        return MessageResponse(success=True, response=response_text, whatsapp_payload=whatsapp_payload)
 
     except Exception as e:
         logger.error(f"[BRIDGE] Error handling message: {e}")
