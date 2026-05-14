@@ -41,6 +41,14 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "info"
 
+
+    # WhatsApp Safeguards & Features
+    whatsapp_business_api_mode: bool = False
+    max_messages_per_user_per_day: int = 1
+    enable_interactive_messages: bool = True
+    require_reminder_opt_in: bool = True
+    whatsapp_send_rate_limit_per_min: int = 10
+
     # Python Bridge Server
     python_bridge_host: str = "127.0.0.1"
     python_bridge_port: int = 8000
