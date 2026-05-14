@@ -248,3 +248,38 @@ class TestACLRehabTools:
 
         assert result["error"] is True
         assert "Unknown tool" in result["message"]
+
+
+def test_set_reminder_persists_is_active(tools: ACLRehabTools, temp_db: DatabaseManager) -> None:
+    """Integration test: set_reminder schedules job and persists is_active=1."""
+    import app.scheduler as scheduler_module
+    from sqlalchemy import text
+
+    class DummyScheduler:
+        def add_job(self, func, trigger, args=None, id=None, replace_existing=False):
+            # no-op scheduler for testing
+            self.last_job_id = id
+
+    # Install dummy scheduler
+    scheduler_module.scheduler = DummyScheduler()
+
+    user_id = "testuser@whatsapp"
+    result = tools.set_reminder(user_id=user_id, task="Drink Water", schedule_type="interval", time_value="1")
+
+    assert result.get("success") is True
+    reminder_id = result.get("reminder_id")
+    assert reminder_id is not None
+
+    job_id = f"rem_{reminder_id}"
+
+    # Verify DB row persisted with is_active = 1
+    with temp_db.engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT job_id, is_active FROM reminders WHERE user_id = :uid AND job_id = :jid"),
+            {"uid": user_id, "jid": job_id},
+        ).fetchone()
+
+    assert row is not None
+    assert row[0] == job_id
+    # SQLite may return 0/1 or True/False; normalize to int
+    assert int(row[1]) == 1

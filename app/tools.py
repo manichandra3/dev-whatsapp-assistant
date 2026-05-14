@@ -691,14 +691,15 @@ class ACLRehabTools:
                 with engine.connect() as conn:
                     conn.execute(
                         text(
-                            "INSERT INTO reminders (user_id, job_id, reminder_type, interval_expression) "
-                            "VALUES (:uid, :jid, :type, :expr)"
+                            "INSERT INTO reminders (user_id, job_id, reminder_type, interval_expression, is_active) "
+                            "VALUES (:uid, :jid, :type, :expr, :active)"
                         ),
                         {
                             "uid": user_id,
                             "jid": job_id,
                             "type": task,
                             "expr": f"{schedule_type}_{time_value}",
+                            "active": 1,
                         },
                     )
                     conn.commit()
