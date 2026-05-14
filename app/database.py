@@ -60,6 +60,11 @@ class UserConfig:
     goals: str | None
     image_opt_in: bool | None = None
     image_auto_confirm: bool | None = None
+    whatsapp_reminder_opt_in: bool = False
+    opt_in_timestamp: str | None = None
+    last_user_message_at: str | None = None
+    messages_sent_today: int = 0
+    last_sent_date: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
 
@@ -149,6 +154,11 @@ class DatabaseManager:
             Column("goals", Text),
             Column("image_opt_in", Boolean, default=False),
             Column("image_auto_confirm", Boolean, default=False),
+            Column("whatsapp_reminder_opt_in", Boolean, default=False),
+            Column("opt_in_timestamp", DateTime),
+            Column("last_user_message_at", DateTime),
+            Column("messages_sent_today", Integer, default=0),
+            Column("last_sent_date", Text),
             Column(
                 "created_at", DateTime, nullable=False, server_default=text("DATETIME('now')")
             ),
@@ -303,6 +313,17 @@ class DatabaseManager:
                 conn.execute(text("ALTER TABLE user_config ADD COLUMN image_opt_in BOOLEAN DEFAULT 0"))
             if "image_auto_confirm" not in col_names:
                 conn.execute(text("ALTER TABLE user_config ADD COLUMN image_auto_confirm BOOLEAN DEFAULT 0"))
+            if "whatsapp_reminder_opt_in" not in col_names:
+                conn.execute(text("ALTER TABLE user_config ADD COLUMN whatsapp_reminder_opt_in BOOLEAN DEFAULT 0"))
+            if "opt_in_timestamp" not in col_names:
+                conn.execute(text("ALTER TABLE user_config ADD COLUMN opt_in_timestamp DATETIME"))
+            if "last_user_message_at" not in col_names:
+                conn.execute(text("ALTER TABLE user_config ADD COLUMN last_user_message_at DATETIME"))
+            if "messages_sent_today" not in col_names:
+                conn.execute(text("ALTER TABLE user_config ADD COLUMN messages_sent_today INTEGER DEFAULT 0"))
+            if "last_sent_date" not in col_names:
+                conn.execute(text("ALTER TABLE user_config ADD COLUMN last_sent_date TEXT"))
+
                 
             # Check reminders columns
             columns = conn.execute(text("PRAGMA table_info(reminders)")).fetchall()
@@ -316,8 +337,27 @@ class DatabaseManager:
                 conn.execute(text("ALTER TABLE reminders ADD COLUMN dose TEXT"))
             if "raw_text" not in col_names:
                 conn.execute(text("ALTER TABLE reminders ADD COLUMN raw_text TEXT"))
-                
+
+            # Add last_stanza_id to reminders for reply matching
+            if "last_stanza_id" not in col_names:
+                conn.execute(text("ALTER TABLE reminders ADD COLUMN last_stanza_id TEXT"))
+
+            # Check adherence_logs columns and add reminder_id and stanza_id if missing
+            columns = conn.execute(text("PRAGMA table_info(adherence_logs)")).fetchall()
+            if columns:
+                al_col_names = [c[1] for c in columns]
+                if "reminder_id" not in al_col_names:
+                    conn.execute(text("ALTER TABLE adherence_logs ADD COLUMN reminder_id INTEGER"))
+                if "stanza_id" not in al_col_names:
+                    conn.execute(text("ALTER TABLE adherence_logs ADD COLUMN stanza_id TEXT"))
+
             conn.commit()
+
+    def get_engine_or_raise(self) -> Engine:
+        """Return the SQLAlchemy engine or raise a helpful error if not initialized."""
+        if not getattr(self, "engine", None):
+            raise RuntimeError("Database engine is not initialized. Ensure DatabaseManager._init() ran and the database path is correct.")
+        return self.engine
 
     def _create_indexes(self) -> None:
         """Create indexes for better query performance."""
@@ -487,8 +527,13 @@ class DatabaseManager:
                     goals=result[7],
                     image_opt_in=bool(result[8]) if result[8] is not None else None,
                     image_auto_confirm=bool(result[9]) if result[9] is not None else None,
-                    created_at=str(result[10]),
-                    updated_at=str(result[11]),
+                    whatsapp_reminder_opt_in=bool(result[10]) if len(result) > 10 and result[10] is not None else False,
+                    opt_in_timestamp=str(result[11]) if len(result) > 11 and result[11] is not None else None,
+                    last_user_message_at=str(result[12]) if len(result) > 12 and result[12] is not None else None,
+                    messages_sent_today=int(result[13]) if len(result) > 13 and result[13] is not None else 0,
+                    last_sent_date=str(result[14]) if len(result) > 14 and result[14] is not None else None,
+                    created_at=str(result[15]) if len(result) > 15 else str(result[10]),
+                    updated_at=str(result[16]) if len(result) > 16 else str(result[11]),
                 )
             return None
 
@@ -576,3 +621,11 @@ class DatabaseManager:
         if self.engine:
             self.engine.dispose()
             logger.info("[DATABASE] Connection closed")
+
+    def update_last_message_time(self, user_id: str) -> None:
+        with self.engine.connect() as conn:
+            conn.execute(
+                text("UPDATE user_config SET last_user_message_at = DATETIME('now') WHERE user_id = :user_id"),
+                {"user_id": user_id}
+            )
+            conn.commit()
