@@ -855,7 +855,7 @@ Do not include any text outside the JSON."""
             scheduler.add_job(
                 send_scheduled_reminder,
                 trigger=trigger,
-                args=[user_id, "reminder", content],
+                args=[user_id, "reminder", content, reminder_id],
                 id=job_id,
                 replace_existing=True,
             )
@@ -894,35 +894,70 @@ Do not include any text outside the JSON."""
             return {"error": True, "message": str(e)}
 
     def list_reminders(self, user_id: str) -> dict[str, Any]:
-        """Lists all active reminders for the user."""
+        """Lists all active reminders for the user with friendly schedule descriptions."""
         engine = self.db.engine
         if engine is None:
             return {"error": True, "message": "Database not initialized"}
-        
+
+        scheduler = get_scheduler()
+
         try:
             with engine.connect() as conn:
                 results = conn.execute(
-                    text("SELECT job_id, reminder_type, interval_expression, is_active FROM reminders WHERE user_id = :uid AND is_active = 1"),
+                    text("SELECT id, job_id, reminder_type, interval_expression, is_active FROM reminders WHERE user_id = :uid AND is_active = 1"),
                     {"uid": user_id}
                 ).fetchall()
-                
+
             reminders = []
             for row in results:
-                # job_id is like 'rem_UUID', we can return the UUID or the full job_id
-                r_id = row.job_id.replace("rem_", "") if row.job_id else "unknown"
+                job_id = row.job_id
+                r_id = job_id.replace("rem_", "") if job_id else str(row.id)
+                friendly = "Unknown schedule"
+                next_run = "No job"
+
+                try:
+                    if scheduler and job_id:
+                        job = scheduler.get_job(str(job_id))
+                        if job is None:
+                            friendly = "Scheduled (job missing)"
+                        else:
+                            # Next run time handling
+                            nrt = job.next_run_time
+                            if nrt is None:
+                                next_run = "Paused"
+                            else:
+                                try:
+                                    next_run = nrt.isoformat()
+                                except Exception:
+                                    next_run = str(nrt)
+
+                            # Friendly trigger description
+                            trig_name = job.trigger.__class__.__name__
+                            if trig_name == "CronTrigger":
+                                friendly = f"Cron: {str(job.trigger)}"
+                            elif trig_name == "IntervalTrigger":
+                                friendly = f"Interval: {str(job.trigger)}"
+                            else:
+                                friendly = f"{trig_name}: {str(job.trigger)}"
+
+                except Exception:
+                    friendly = row.interval_expression or "Custom"
+
                 reminders.append({
                     "id": r_id,
                     "task": row.reminder_type,
-                    "schedule": row.interval_expression,
-                    "active": bool(row.is_active)
+                    "schedule": friendly,
+                    "next_run": next_run,
+                    "active": bool(row.is_active),
                 })
-            
+
             return {
                 "success": True,
                 "reminders": reminders,
                 "message": f"Found {len(reminders)} active reminders."
             }
         except Exception as e:
+            logger.exception("[TOOL] Error listing reminders: %s", e)
             return {"error": True, "message": str(e)}
 
     def delete_reminder(self, user_id: str, reminder_id: str) -> dict[str, Any]:

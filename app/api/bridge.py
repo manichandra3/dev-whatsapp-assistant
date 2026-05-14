@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from app.coach import ACLRehabCoach
 from app.config import get_settings
 from app.scheduler import init_scheduler, get_scheduler
+from sqlalchemy import text as sa_text
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ class MessageRequest(BaseModel):
     user_id: str = Field(..., description="WhatsApp user ID (e.g., 1234567890@s.whatsapp.net)")
     message_text: str = Field(..., description="The message content from the user")
     media: dict[str, Any] | None = None
+    context: dict[str, Any] | None = None
 
 
 class MessageResponse(BaseModel):
@@ -32,6 +34,7 @@ class MessageResponse(BaseModel):
 
     success: bool
     response: str | None = None
+    whatsapp_payload: dict[str, Any] | None = None
     error: str | None = None
 
 
@@ -120,7 +123,11 @@ async def handle_message(request: Request) -> MessageResponse:
 
         if content_type.startswith("application/json"):
             payload = await request.json()
+            # Ensure context is preserved when forwarded from Node bridge
+            ctx = payload.get("context")
             request_data = MessageRequest(**payload)
+            if ctx and isinstance(ctx, dict):
+                request_data.context = ctx
         elif content_type.startswith("multipart/form-data"):
             form = await request.form()
             user_id = form.get("user_id")
@@ -141,23 +148,78 @@ async def handle_message(request: Request) -> MessageResponse:
                     "data": media_bytes,
                 }
 
+            # Parse optional context field (may be JSON string)
+            context_field = form.get("context")
+            context_obj = None
+            if context_field:
+                try:
+                    import json
+
+                    context_obj = json.loads(context_field)
+                except Exception:
+                    context_obj = {"raw": str(context_field)}
+
             request_data = MessageRequest(
                 user_id=str(user_id),
                 message_text=str(message_text),
                 media=media_payload,
+                context=context_obj,
             )
         else:
             raise HTTPException(status_code=415, detail="Unsupported content type")
 
         logger.info(f"[BRIDGE] Received message from {request_data.user_id}")
 
+        # Check for "done" style replies when context contains stanza id
+        ctx = request_data.context or {}
+        stanza_id = ctx.get("stanzaId") or ctx.get("stanza_id") or ctx.get("stanzaId")
+        message_text_str = request_data.message_text or ""
+        text = message_text_str.strip().lower()
+        if stanza_id and text in ("done", "done.", "✓", "ok", "okay"):
+            # Match to reminder by last_stanza_id
+            try:
+                engine = coach.db.get_engine_or_raise()
+                with engine.connect() as conn:
+                    row = conn.execute(
+                        sa_text("SELECT id, user_id FROM reminders WHERE last_stanza_id = :sid"),
+                        {"sid": stanza_id},
+                    ).fetchone()
+                    if row and row[1] == request_data.user_id:
+                        # Insert adherence log
+                        conn.execute(
+                            sa_text(
+                                "INSERT INTO adherence_logs (user_id, reminder_type, action_time, status, reminder_id, stanza_id) VALUES (:uid, :rtype, DATETIME('now'), :status, :rid, :sid)"
+                            ),
+                            {
+                                "uid": request_data.user_id,
+                                "rtype": "reminder",
+                                "status": "done",
+                                "rid": row[0],
+                                "sid": stanza_id,
+                            },
+                        )
+                        conn.commit()
+                        return MessageResponse(success=True, response="Thanks — logged your completion of the reminder.")
+            except Exception as e:
+                logger.warning(f"[BRIDGE] Error matching done reply: {e}")
+
+        # Update last message time in DB
+        coach.db.update_last_message_time(request_data.user_id)
+
         response = await coach.handle_message(
             user_id=request_data.user_id,
             message_text=request_data.message_text,
             media=request_data.media,
+            
         )
+        
+        response_text = response
+        whatsapp_payload = None
+        if isinstance(response, tuple):
+            response_text = response[0]
+            whatsapp_payload = response[1]
 
-        return MessageResponse(success=True, response=response)
+        return MessageResponse(success=True, response=response_text, whatsapp_payload=whatsapp_payload)
 
     except Exception as e:
         logger.error(f"[BRIDGE] Error handling message: {e}")

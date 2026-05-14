@@ -83,7 +83,7 @@ class ACLRehabCoach:
         user_id: str,
         message_text: str,
         media: dict[str, Any] | None = None,
-    ) -> str:
+    ) -> str | tuple[str, dict[str, Any]]:
         """
         Handle an incoming message from a user.
 
