@@ -57,8 +57,9 @@ class RecoveryPhaseResult:
 class ACLRehabTools:
     """Tool implementations for ACL rehabilitation coaching."""
 
-    def __init__(self, database: DatabaseManager) -> None:
+    def __init__(self, database: DatabaseManager, llm=None) -> None:
         self.db = database
+        self.llm = llm
 
     def get_recovery_phase(
         self, user_id: str, surgery_date: str | None = None
@@ -365,9 +366,180 @@ class ACLRehabTools:
 
         return "\n".join(context_parts) if context_parts else None
 
+    async def parse_prescription_image(self, user_id: str, media_id: str) -> dict[str, Any]:
+        """Parse prescription image to extract medications and schedules."""
+        if not self.llm:
+            return {"error": True, "message": "LLM provider not configured for image analysis."}
+            
+        try:
+            with self.db.engine.connect() as conn:
+                from sqlalchemy import text
+                result = conn.execute(
+                    text("SELECT path FROM media WHERE id = :id AND user_id = :uid"),
+                    {"id": media_id, "uid": user_id}
+                ).fetchone()
+                
+            if not result:
+                return {"error": True, "message": f"Media ID {media_id} not found."}
+                
+            image_path = result[0]
+            
+            prompt = """You are a medical data extraction assistant. 
+Please carefully read this prescription/medication label and extract the following details in JSON format.
+If you cannot find a detail, use null.
+The output MUST be valid JSON matching this schema exactly:
+{
+    "meds": [
+        {
+            "name": "string (name of medication)",
+            "dose": "string (e.g. 500mg)",
+            "frequency": "string (e.g. twice daily, q12h)",
+            "duration": "string (e.g. 7 days)",
+            "raw_text": "string (the exact text snippet you found this in)"
+        }
+    ],
+    "suggestions": ["string (e.g. 'Set a reminder for twice daily', 'Ensure taken with food')"]
+}
+Do not include any text outside the JSON."""
+
+            response_text = await self.llm.analyze_image(image_path, prompt)
+            
+            # Extract JSON block
+            import json
+            import re
+            json_match = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                # try to find anything that looks like JSON
+                json_match = re.search(r'(\{.*\})', response_text, re.DOTALL)
+                json_str = json_match.group(1) if json_match else response_text
+
+            parsed_data = json.loads(json_str)
+            
+            # Save the parse result
+            with self.db.engine.connect() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO prescription_parses (user_id, media_id, raw_text, parsed_json) "
+                        "VALUES (:uid, :mid, :raw, :json)"
+                    ),
+                    {"uid": user_id, "mid": media_id, "raw": response_text, "json": json.dumps(parsed_data)}
+                )
+                conn.commit()
+                
+            return {
+                "success": True,
+                "parsed_data": parsed_data,
+                "message": f"Successfully parsed prescription. Found {len(parsed_data.get('meds', []))} medications."
+            }
+            
+        except Exception as e:
+            logger.error(f"[TOOL] Error parsing prescription: {e}")
+            return {"error": True, "message": str(e)}
+
+    async def interpret_knee_image(self, user_id: str, media_id: str) -> dict[str, Any]:
+        """Interpret a knee image for recovery progress and red flags."""
+        if not self.llm:
+            return {"error": True, "message": "LLM provider not configured for image analysis."}
+            
+        try:
+            with self.db.engine.connect() as conn:
+                from sqlalchemy import text
+                result = conn.execute(
+                    text("SELECT path FROM media WHERE id = :id AND user_id = :uid"),
+                    {"id": media_id, "uid": user_id}
+                ).fetchone()
+                
+            if not result:
+                return {"error": True, "message": f"Media ID {media_id} not found."}
+                
+            image_path = result[0]
+            
+            prompt = """You are an ACL rehabilitation assistant. 
+Please look at this image of a knee post-surgery.
+You must NEVER provide a definitive medical diagnosis. Provide OBSERVATIONS ONLY.
+
+Evaluate the image for:
+1. Dressing status (is it covered, exposed, clean, soiled?)
+2. Visible redness (erythema)
+3. Swelling (compare to surrounding tissue if possible)
+4. Bruising (ecchymosis)
+5. Any visible drainage or discharge
+6. Overall impression
+
+Output MUST be valid JSON:
+{
+    "observations": [
+        "Observation 1",
+        "Observation 2"
+    ],
+    "flags": [
+        "Any red flags (e.g. extreme redness, purulent drainage). Empty array if none."
+    ],
+    "confidence": "high|medium|low"
+}
+Do not include any text outside the JSON."""
+
+            response_text = await self.llm.analyze_image(image_path, prompt)
+            
+            import json
+            import re
+            json_match = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                json_match = re.search(r'(\{.*\})', response_text, re.DOTALL)
+                json_str = json_match.group(1) if json_match else response_text
+
+            parsed_data = json.loads(json_str)
+            
+            return {
+                "success": True,
+                "data": parsed_data,
+                "message": "Successfully interpreted knee image. Please review the observations and flags."
+            }
+            
+        except Exception as e:
+            logger.error(f"[TOOL] Error interpreting knee image: {e}")
+            return {"error": True, "message": str(e)}
     def get_tool_definitions(self) -> list[dict[str, Any]]:
         """Get formatted tools list for LLM."""
         return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "parse_prescription_image",
+                    "description": "Parse a prescription or medication label image to extract medication names, doses, frequencies, and durations. Call this when the user uploads an image of a prescription.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "media_id": {
+                                "type": "string",
+                                "description": "The media ID of the uploaded image (found in the message context)."
+                            }
+                        },
+                        "required": ["media_id"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "interpret_knee_image",
+                    "description": "Interpret an image of a knee post-surgery to provide observations on swelling, redness, dressing, and flag potential issues. Call this when the user uploads an image of their knee.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "media_id": {
+                                "type": "string",
+                                "description": "The media ID of the uploaded image (found in the message context)."
+                            }
+                        },
+                        "required": ["media_id"],
+                    },
+                },
+            },
             {
                 "type": "function",
                 "function": {
@@ -600,7 +772,11 @@ class ACLRehabTools:
         self, tool_name: str, user_id: str, args: dict[str, Any]
     ) -> dict[str, Any]:
         """Execute a tool call from the LLM."""
-        if tool_name == "set_surgery_date":
+        if tool_name == "parse_prescription_image":
+            return await self.parse_prescription_image(user_id, args["media_id"])
+        elif tool_name == "interpret_knee_image":
+            return await self.interpret_knee_image(user_id, args["media_id"])
+        elif tool_name == "set_surgery_date":
             return self.set_surgery_date(
                 user_id=user_id,
                 surgery_date=args["surgery_date"],
@@ -663,13 +839,13 @@ class ACLRehabTools:
                 hours, minutes = map(int, time_value.split(":"))
                 trigger = CronTrigger(hour=hours, minute=minutes)
             elif schedule_type == "interval":
-                hours = float(time_value)
-                if hours < 0.25:
+                interval_hours = float(time_value)
+                if interval_hours < 0.25:
                     return {
                         "error": True,
                         "message": "Interval too short. Minimum interval is 0.25 hours (15 minutes).",
                     }
-                trigger = IntervalTrigger(seconds=int(hours * 3600))
+                trigger = IntervalTrigger(seconds=int(interval_hours * 3600))
             else:
                 return {
                     "error": True,
@@ -834,14 +1010,15 @@ class ACLRehabTools:
                     hours, minutes = map(int, time_value.split(":"))
                     trigger = CronTrigger(hour=hours, minute=minutes)
                 elif schedule_type == "interval":
-                    hours = float(time_value)
-                    trigger = IntervalTrigger(seconds=int(hours * 3600))
+                    interval_hours = float(time_value)
+                    trigger = IntervalTrigger(seconds=int(interval_hours * 3600))
                 else:
                     return {"error": True, "message": f"Unknown schedule_type: {schedule_type}"}
 
                 if scheduler:
-                    # Update job trigger
+                    # Update job trigger and args
                     content = f"Reminder: {task}. Reply 'Done' when you've finished."
+                    scheduler.modify_job(job_id, args=[user_id, "reminder", content])
                     scheduler.reschedule_job(job_id, trigger=trigger)
                 
                 # Update DB

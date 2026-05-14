@@ -20,20 +20,40 @@ export class BridgeClient {
    * @param {string} messageText - The message content
    * @returns {Promise<{success: boolean, response: string|null, error: string|null}>}
    */
-  async sendMessage(userId, messageText) {
+  async sendMessage(userId, messageText, media = null) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
 
     try {
-      const response = await fetch(`${this.baseUrl}/message`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+      const hasMedia = media && media.buffer;
+      const headers = {};
+      let body;
+
+      if (hasMedia) {
+        const formData = new FormData();
+        formData.append('user_id', userId);
+        formData.append('message_text', messageText || '');
+        if (media.caption) {
+          formData.append('media_caption', media.caption);
+        }
+        formData.append(
+          'media',
+          new Blob([media.buffer], { type: media.mimeType || 'image/jpeg' }),
+          media.fileName || 'image.jpg'
+        );
+        body = formData;
+      } else {
+        headers['Content-Type'] = 'application/json';
+        body = JSON.stringify({
           user_id: userId,
           message_text: messageText,
-        }),
+        });
+      }
+
+      const response = await fetch(`${this.baseUrl}/message`, {
+        method: 'POST',
+        headers,
+        body,
         signal: controller.signal,
       });
 

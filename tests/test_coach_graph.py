@@ -6,7 +6,7 @@ Regression tests to verify behavior parity between legacy and LangGraph runtimes
 
 import os
 import tempfile
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 

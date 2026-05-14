@@ -5,7 +5,6 @@ Starts the FastAPI server for the Python bridge.
 """
 
 import logging
-import os
 import sys
 
 import uvicorn

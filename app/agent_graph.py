@@ -56,7 +56,7 @@ class CoachGraph:
         self.max_tool_loops = max_tool_loops
         self._graph = self._build_graph()
 
-    def _build_graph(self) -> StateGraph:
+    def _build_graph(self) -> Any:
         """Build the coaching state machine graph."""
         graph = StateGraph(CoachState)
 
@@ -108,7 +108,8 @@ class CoachGraph:
 
     def _should_bypass(self, state: CoachState) -> Literal["bypass", "continue"]:
         """Check if safety red flag detected."""
-        if state.get("safety_result") and state["safety_result"].has_red_flag:
+        safety_result = state.get("safety_result")
+        if safety_result and safety_result.has_red_flag:
             return "bypass"
         return "continue"
 
@@ -231,9 +232,12 @@ class CoachGraph:
 
         state["tool_results"] = tool_results
 
+        llm_response = state.get("llm_response")
+        content = llm_response.content if llm_response else ""
+        
         state["conversation"].append({
             "role": "assistant",
-            "content": state["llm_response"].content or "",
+            "content": content or "",
             "tool_calls": [tc.to_dict() for tc in tool_calls],
         })
 
@@ -266,7 +270,8 @@ class CoachGraph:
 
     def _persist_node(self, state: CoachState) -> CoachState:
         """Update conversation history and set final response."""
-        llm_content = state["llm_response"].content if state.get("llm_response") else ""
+        llm_response = state.get("llm_response")
+        llm_content = llm_response.content if llm_response and llm_response.content else ""
 
         state["conversation"].append({"role": "assistant", "content": llm_content})
 
@@ -280,8 +285,16 @@ class CoachGraph:
 
         return state
 
-    async def run(self, user_id: str, message_text: str) -> str:
+    async def run(self, user_id: str, message_text: str, media_id: str | None = None) -> str:
         """Run the graph and return the final response."""
+        
+        # We need to prepend media_id info to message_text if it exists,
+        # or we can pass it down. Wait, we can append it directly to message_text 
+        # so the LLM knows about it.
+        # But wait, in the legacy we just appended it to the text. We can do that here.
+        if media_id:
+            message_text = f"{message_text}\n\n[MEDIA ATTACHED]\nMedia ID: {media_id}"
+
         initial_state: CoachState = {
             "user_id": user_id,
             "message_text": message_text,

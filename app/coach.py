@@ -13,9 +13,10 @@ from typing import Any
 from app.agent_graph import CoachGraph
 from app.config import Settings
 from app.database import DatabaseManager
-from app.llm.providers import LLMProvider, LLMResponse, ToolCall
+from app.llm.providers import LLMProvider
 from app.safety_interceptor import SafetyInterceptor
 from app.tools import ACLRehabTools
+from app.onboarding import OnboardingManager
 
 logger = logging.getLogger(__name__)
 
@@ -49,12 +50,18 @@ class ACLRehabCoach:
         # Initialize components
         self.safety = SafetyInterceptor()
         self.db = DatabaseManager(settings.database_path)
-        self.tools = ACLRehabTools(self.db)
+        # Initialize LLM first so we can pass it to tools
         self.llm = LLMProvider(
             provider=settings.llm_provider,
             model=settings.llm_model,
             api_key=settings.get_llm_api_key(),
         )
+
+        self.tools = ACLRehabTools(self.db, self.llm)
+        self.onboarding = OnboardingManager(self.db)
+        
+        from app.media import MediaManager
+        self.media_manager = MediaManager(self.db)
 
         # Initialize LangGraph if enabled
         self.agent_graph: CoachGraph | None = None
@@ -71,7 +78,12 @@ class ACLRehabCoach:
         else:
             logger.info(f"[COACH] Initialized with legacy runtime (provider: {settings.llm_provider})")
 
-    async def handle_message(self, user_id: str, message_text: str) -> str:
+    async def handle_message(
+        self,
+        user_id: str,
+        message_text: str,
+        media: dict[str, Any] | None = None,
+    ) -> str:
         """
         Handle an incoming message from a user.
 
@@ -82,22 +94,41 @@ class ACLRehabCoach:
         Returns:
             Response text to send back to the user
         """
-        # Use LangGraph if enabled
-        if self.agent_graph is not None:
-            return await self.agent_graph.run(user_id, message_text)
+        # Save media if present
+        media_id = None
+        if media:
+            try:
+                media_id = self.media_manager.save_media(user_id, media)
+                logger.info(f"[COACH] Saved media with ID: {media_id}")
+            except Exception as e:
+                logger.error(f"[COACH] Error saving media: {e}")
 
-        # Legacy implementation
-        return await self._handle_message_legacy(user_id, message_text)
-
-    async def _handle_message_legacy(self, user_id: str, message_text: str) -> str:
-        logger.info(f"[COACH] Processing message from {user_id}")
-
-        # STEP 1: Safety Interceptor (BEFORE LLM)
+        # STEP 0: Safety Interceptor (ALWAYS FIRST - BEFORE ONBOARDING)
         safety_check = self.safety.check_message(message_text)
-
         if safety_check.has_red_flag:
             logger.warning("[SAFETY] RED FLAG DETECTED - Sending emergency response")
             return safety_check.response  # type: ignore
+
+        # STEP 1: Onboarding Interceptor
+        onboarding_response = self.onboarding.handle_message(user_id, message_text)
+        if onboarding_response:
+            return onboarding_response
+
+        # Use LangGraph if enabled
+        if self.agent_graph is not None:
+            return await self.agent_graph.run(user_id, message_text, media_id=media_id)
+
+        # Legacy implementation
+        return await self._handle_message_legacy(user_id, message_text, media, media_id)
+
+    async def _handle_message_legacy(
+        self,
+        user_id: str,
+        message_text: str,
+        media: dict[str, Any] | None,
+        media_id: str | None = None,
+    ) -> str:
+        logger.info(f"[COACH] Processing message from {user_id}")
 
         # STEP 2: Initialize user if needed
         await self._initialize_user(user_id)
@@ -106,11 +137,23 @@ class ACLRehabCoach:
             # STEP 3: Get conversation history
             messages = self._get_conversation_history(user_id)
 
-            # STEP 3.5: Build user context and prepend to message
+            # STEP 4: Build user context and prepend to message
             user_context = self.tools.build_user_context(user_id)
             message_with_context = message_text
             if user_context:
                 message_with_context = f"{user_context}\n\n---\nUser message: {message_text}"
+            if media:
+                media_info = [
+                    "[MEDIA ATTACHED]",
+                    f"Type: {media.get('content_type', 'unknown')}",
+                    f"Filename: {media.get('filename', 'unknown')}",
+                ]
+                if media_id:
+                    media_info.append(f"Media ID: {media_id}")
+                if media.get("caption"):
+                    media_info.append(f"Caption: {media.get('caption')}")
+                
+                message_with_context = f"{message_with_context}\n\n" + "\n".join(media_info)
 
             # Add new user message with context
             messages.append({"role": "user", "content": message_with_context})
@@ -207,7 +250,8 @@ class ACLRehabCoach:
         user_config = self.db.get_user_config(user_id)
 
         if not user_config:
-            # Create user with default surgery date from settings
+            # We shouldn't hit this if onboarding is enabled and working,
+            # but keep it as a fallback.
             surgery_date = (
                 self.settings.surgery_date
                 or date.today().isoformat()
@@ -215,7 +259,7 @@ class ACLRehabCoach:
 
             self.db.set_surgery_date(user_id, surgery_date)
             logger.info(
-                f"[COACH] Initialized new user: {user_id} "
+                f"[COACH] Initialized new user (fallback): {user_id} "
                 f"with surgery date: {surgery_date}"
             )
 

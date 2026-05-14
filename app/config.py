@@ -52,6 +52,25 @@ class Settings(BaseSettings):
     agent_runtime: Literal["legacy", "langgraph"] = "legacy"
     langgraph_max_tool_loops: int = 3
 
+    # Image Features
+    image_features_enabled: bool = False
+    vision_provider: Literal[
+        "auto",
+        "google",
+        "tesseract",
+        "openai",
+        "anthropic",
+        "gemini",
+    ] = "auto"
+    ocr_provider: Literal[
+        "auto",
+        "google",
+        "tesseract",
+    ] = "auto"
+    media_root: str = "./data/media"
+    media_retention_days: int = 7
+    image_auto_confirm: bool = False
+
     def get_llm_api_key(self) -> str:
         """Get the API key for the configured LLM provider."""
         provider = self.llm_provider.lower()

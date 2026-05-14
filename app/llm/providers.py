@@ -222,7 +222,7 @@ Remember: You're a supportive coach helping them stay on track with their recove
         conversation_messages = [m for m in messages if m.get("role") != "system"]
 
         # Convert messages to Anthropic format - normalize ALL content to block arrays
-        converted_messages = []
+        converted_messages: list[dict[str, Any]] = []
         for msg in conversation_messages:
             role = msg.get("role")
             content = msg.get("content")
@@ -376,3 +376,83 @@ Remember: You're a supportive coach helping them stay on track with their recove
             }
             for tr in tool_results
         ]
+
+    async def analyze_image(self, image_path: str, prompt: str) -> str:
+        """Analyze an image using the configured LLM provider."""
+        import base64
+        import mimetypes
+        
+        mime_type, _ = mimetypes.guess_type(image_path)
+        mime_type = mime_type or "image/jpeg"
+        
+        with open(image_path, "rb") as f:
+            base64_image = base64.b64encode(f.read()).decode("utf-8")
+            
+        try:
+            if self.provider == "openai":
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:{mime_type};base64,{base64_image}"
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    max_tokens=1000
+                )
+                return response.choices[0].message.content
+                
+            elif self.provider == "anthropic":
+                response = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=1000,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": mime_type,
+                                        "data": base64_image
+                                    }
+                                },
+                                {"type": "text", "text": prompt}
+                            ]
+                        }
+                    ]
+                )
+                text_content = ""
+                for block in response.content:
+                    if block.type == "text":
+                        text_content += block.text
+                return text_content
+                
+            elif self.provider == "google":
+                from google.genai import types as genai_types
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=[
+                        prompt,
+                        genai_types.Part.from_bytes(
+                            data=base64.b64decode(base64_image),
+                            mime_type=mime_type,
+                        )
+                    ]
+                )
+                return response.text
+                
+        except Exception as e:
+            logger.error(f"[LLM] Error analyzing image: {e}")
+            raise
+            
+        raise ValueError(f"Unsupported provider: {self.provider}")

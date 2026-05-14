@@ -8,7 +8,7 @@ with the existing Node.js database schema.
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -17,16 +17,12 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     DateTime,
-    Index,
     Integer,
     MetaData,
-    String,
     Table,
     Text,
     UniqueConstraint,
     create_engine,
-    func,
-    select,
     text,
 )
 from sqlalchemy.engine import Engine
@@ -58,8 +54,14 @@ class UserConfig:
     surgery_date: str
     surgeon_name: str | None
     surgery_type: str | None
-    created_at: str
-    updated_at: str
+    gamification_opt_in: bool
+    notify_badges: bool
+    timezone: str
+    goals: str | None
+    image_opt_in: bool | None = None
+    image_auto_confirm: bool | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 @dataclass
@@ -141,11 +143,72 @@ class DatabaseManager:
             Column("surgery_date", Text, nullable=False),
             Column("surgeon_name", Text),
             Column("surgery_type", Text),
+            Column("gamification_opt_in", Boolean, default=False),
+            Column("notify_badges", Boolean, default=True),
+            Column("timezone", Text, default="UTC"),
+            Column("goals", Text),
+            Column("image_opt_in", Boolean, default=False),
+            Column("image_auto_confirm", Boolean, default=False),
             Column(
                 "created_at", DateTime, nullable=False, server_default=text("DATETIME('now')")
             ),
             Column(
                 "updated_at", DateTime, nullable=False, server_default=text("DATETIME('now')")
+            ),
+        )
+
+        # Onboarding sessions table
+        self.onboarding_sessions = Table(
+            "onboarding_sessions",
+            self.metadata,
+            Column("user_id", Text, primary_key=True),
+            Column("current_step", Integer, nullable=False, default=1),
+            Column("surgery_date", Text),
+            Column("baseline_pain", Integer),
+            Column("goal", Text),
+            Column("timezone", Text),
+            Column("gamification_opt_in", Boolean),
+            Column("notification_freq", Text),
+            Column(
+                "updated_at", DateTime, nullable=False, server_default=text("DATETIME('now')")
+            ),
+        )
+
+        # Adherence streaks table
+        self.adherence_streaks = Table(
+            "adherence_streaks",
+            self.metadata,
+            Column("id", Integer, primary_key=True, autoincrement=True),
+            Column("user_id", Text, nullable=False, unique=True),
+            Column("current_streak_days", Integer, default=0),
+            Column("longest_streak_days", Integer, default=0),
+            Column("last_streak_date", Text), # DATE string
+            Column(
+                "updated_at", DateTime, nullable=False, server_default=text("DATETIME('now')")
+            ),
+        )
+
+        # Badges table
+        self.badges = Table(
+            "badges",
+            self.metadata,
+            Column("id", Integer, primary_key=True, autoincrement=True),
+            Column("key", Text, unique=True, nullable=False),
+            Column("title", Text, nullable=False),
+            Column("description", Text, nullable=False),
+            Column("icon_path", Text),
+            Column("criteria", Text),
+        )
+
+        # User badges table
+        self.user_badges = Table(
+            "user_badges",
+            self.metadata,
+            Column("id", Integer, primary_key=True, autoincrement=True),
+            Column("user_id", Text, nullable=False),
+            Column("badge_id", Integer, nullable=False),
+            Column(
+                "awarded_at", DateTime, nullable=False, server_default=text("DATETIME('now')")
             ),
         )
 
@@ -160,6 +223,10 @@ class DatabaseManager:
             Column("interval_expression", Text, nullable=False),
             Column("is_active", Boolean, nullable=False, default=True),
             Column("created_at", DateTime, nullable=False, server_default=text("DATETIME('now')")),
+            Column("source_media_id", Text),
+            Column("med_name", Text),
+            Column("dose", Text),
+            Column("raw_text", Text),
         )
 
         # Adherence logs table
@@ -171,6 +238,29 @@ class DatabaseManager:
             Column("reminder_type", Text, nullable=False),
             Column("action_time", DateTime, nullable=False, server_default=text("DATETIME('now')")),
             Column("status", Text, nullable=False), # completed, missed
+        )
+
+        self.media = Table(
+            "media",
+            self.metadata,
+            Column("id", Text, primary_key=True),
+            Column("user_id", Text, nullable=False),
+            Column("path", Text, nullable=False),
+            Column("mime", Text, nullable=False),
+            Column("created_at", DateTime, nullable=False, server_default=text("DATETIME('now')")),
+            Column("expires_at", DateTime, nullable=False),
+            Column("sha256", Text, nullable=False),
+        )
+
+        self.prescription_parses = Table(
+            "prescription_parses",
+            self.metadata,
+            Column("id", Integer, primary_key=True, autoincrement=True),
+            Column("user_id", Text, nullable=False),
+            Column("media_id", Text, nullable=False),
+            Column("raw_text", Text, nullable=False),
+            Column("parsed_json", Text, nullable=False),
+            Column("created_at", DateTime, nullable=False, server_default=text("DATETIME('now')")),
         )
 
     def _init(self) -> None:
@@ -196,8 +286,38 @@ class DatabaseManager:
 
         # Create indexes
         self._create_indexes()
+        
+        # Run basic migrations for existing databases
+        self._run_migrations()
 
         logger.info(f"[DATABASE] Connected to {self.db_path}")
+
+    def _run_migrations(self) -> None:
+        """Run basic ALTER TABLE migrations for existing databases."""
+        with self.engine.connect() as conn:
+            # Check user_config columns
+            columns = conn.execute(text("PRAGMA table_info(user_config)")).fetchall()
+            col_names = [c[1] for c in columns]
+            
+            if "image_opt_in" not in col_names:
+                conn.execute(text("ALTER TABLE user_config ADD COLUMN image_opt_in BOOLEAN DEFAULT 0"))
+            if "image_auto_confirm" not in col_names:
+                conn.execute(text("ALTER TABLE user_config ADD COLUMN image_auto_confirm BOOLEAN DEFAULT 0"))
+                
+            # Check reminders columns
+            columns = conn.execute(text("PRAGMA table_info(reminders)")).fetchall()
+            col_names = [c[1] for c in columns]
+            
+            if "source_media_id" not in col_names:
+                conn.execute(text("ALTER TABLE reminders ADD COLUMN source_media_id TEXT"))
+            if "med_name" not in col_names:
+                conn.execute(text("ALTER TABLE reminders ADD COLUMN med_name TEXT"))
+            if "dose" not in col_names:
+                conn.execute(text("ALTER TABLE reminders ADD COLUMN dose TEXT"))
+            if "raw_text" not in col_names:
+                conn.execute(text("ALTER TABLE reminders ADD COLUMN raw_text TEXT"))
+                
+            conn.commit()
 
     def _create_indexes(self) -> None:
         """Create indexes for better query performance."""
@@ -361,8 +481,14 @@ class DatabaseManager:
                     surgery_date=result[1],
                     surgeon_name=result[2],
                     surgery_type=result[3],
-                    created_at=str(result[4]),
-                    updated_at=str(result[5]),
+                    gamification_opt_in=bool(result[4]),
+                    notify_badges=bool(result[5]),
+                    timezone=result[6],
+                    goals=result[7],
+                    image_opt_in=bool(result[8]) if result[8] is not None else None,
+                    image_auto_confirm=bool(result[9]) if result[9] is not None else None,
+                    created_at=str(result[10]),
+                    updated_at=str(result[11]),
                 )
             return None
 
@@ -378,8 +504,8 @@ class DatabaseManager:
             conn.execute(
                 text(
                     """
-                INSERT INTO user_config (user_id, surgery_date, surgeon_name, surgery_type)
-                VALUES (:user_id, :surgery_date, :surgeon_name, :surgery_type)
+                INSERT INTO user_config (user_id, surgery_date, surgeon_name, surgery_type, gamification_opt_in, notify_badges, timezone, image_opt_in, image_auto_confirm)
+                VALUES (:user_id, :surgery_date, :surgeon_name, :surgery_type, 0, 1, 'UTC', 0, 0)
                 ON CONFLICT(user_id)
                 DO UPDATE SET
                     surgery_date = excluded.surgery_date,

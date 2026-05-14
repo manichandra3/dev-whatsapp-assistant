@@ -6,7 +6,7 @@ Tests for database operations and tool execution.
 
 import os
 import tempfile
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
 import pytest
 
