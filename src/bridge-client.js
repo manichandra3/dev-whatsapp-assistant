@@ -5,9 +5,6 @@
  * FastAPI bridge that handles all coaching logic.
  */
 
-/**
- * Bridge client for communicating with Python coach service.
- */
 export class BridgeClient {
   constructor(baseUrl = 'http://127.0.0.1:8000') {
     this.baseUrl = baseUrl;
@@ -18,6 +15,8 @@ export class BridgeClient {
    * Send a message to the Python coach and get a response.
    * @param {string} userId - WhatsApp user ID
    * @param {string} messageText - The message content
+   * @param {Object} [media=null] - Optional media object (buffer, mimeType, fileName, caption)
+   * @param {Object} [context=null] - Optional conversation context
    * @returns {Promise<{success: boolean, response: string|null, error: string|null}>}
    */
   async sendMessage(userId, messageText, media = null, context = null) {
@@ -29,51 +28,45 @@ export class BridgeClient {
       const headers = {};
       let body;
 
-        if (hasMedia) {
-         const formData = new FormData();
-         formData.append('user_id', userId);
-         formData.append('message_text', messageText || '');
-         if (media.caption) {
-           formData.append('media_caption', media.caption);
-         }
-         formData.append(
-           'media',
-           new Blob([media.buffer], { type: media.mimeType || 'image/jpeg' }),
-           media.fileName || 'image.jpg'
-         );
-         if (context) {
-           formData.append('context', JSON.stringify(context));
-         }
-         body = formData;
-
+      if (hasMedia) {
         const formData = new FormData();
+        
+        // Append core text fields (Duplicates removed)
         formData.append('user_id', userId);
         formData.append('message_text', messageText || '');
+        
         if (media.caption) {
           formData.append('media_caption', media.caption);
         }
+
+        // FIX: Ensure context is sent even when uploading media
+        if (context) {
+          formData.append('context', JSON.stringify(context));
+        }
+
+        // Append the file
         formData.append(
           'media',
           new Blob([media.buffer], { type: media.mimeType || 'image/jpeg' }),
           media.fileName || 'image.jpg'
         );
+        
         body = formData;
-        } else {
-         headers['Content-Type'] = 'application/json';
-         body = JSON.stringify({
-           user_id: userId,
-           message_text: messageText,
-           context: context || null,
-         });
-       }
- 
-       const response = await fetch(`${this.baseUrl}/message`, {
-         method: 'POST',
-         headers,
-         body,
-         signal: controller.signal,
-       });
+      } else {
+        headers['Content-Type'] = 'application/json';
+        body = JSON.stringify({
+          user_id: userId,
+          message_text: messageText,
+          context: context || null,
+        });
+      }
 
+      const response = await fetch(`${this.baseUrl}/message`, {
+        method: 'POST',
+        headers,
+        body,
+        signal: controller.signal,
+      });
 
       clearTimeout(timeoutId);
 
@@ -87,8 +80,7 @@ export class BridgeClient {
         };
       }
 
-      const data = await response.json();
-      return data;
+      return await response.json();
 
     } catch (error) {
       clearTimeout(timeoutId);
