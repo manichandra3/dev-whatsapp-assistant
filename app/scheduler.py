@@ -96,47 +96,51 @@ async def send_scheduled_reminder(
                 {"uid": user_id},
             ).fetchone()
             
-            # Rate limiting / Safeguards
-            if user:
-                row = user._mapping
-                last_msg_raw = row.get("last_user_message_at")
-                opt_in = bool(row.get("whatsapp_reminder_opt_in") or False)
-                messages_sent_today = int(row.get("messages_sent_today") or 0)
-                last_sent_date = row.get("last_sent_date")
-                last_msg = None
+            # Require an explicit user_config row to enforce safeguards
+            if not user:
+                logger.warning(f"[SCHEDULER] No user_config for {user_id}, skipping reminder send")
+                return
 
-                if last_msg_raw:
-                    if isinstance(last_msg_raw, datetime):
-                        last_msg = last_msg_raw
-                    else:
-                        try:
-                            last_msg = datetime.fromisoformat(str(last_msg_raw))
-                        except ValueError:
-                            last_msg = datetime.strptime(str(last_msg_raw), "%Y-%m-%d %H:%M:%S")
-                    if last_msg.tzinfo is None:
-                        last_msg = last_msg.replace(tzinfo=timezone.utc)
-                    else:
-                        last_msg = last_msg.astimezone(timezone.utc)
-                    
-                today_str = datetime.now(timezone.utc).date().isoformat()
+            # Rate limiting / Safeguards
+            row = user._mapping
+            last_msg_raw = row.get("last_user_message_at")
+            opt_in = bool(row.get("whatsapp_reminder_opt_in") or False)
+            messages_sent_today = int(row.get("messages_sent_today") or 0)
+            last_sent_date = row.get("last_sent_date")
+            last_msg = None
+
+            if last_msg_raw:
+                if isinstance(last_msg_raw, datetime):
+                    last_msg = last_msg_raw
+                else:
+                    try:
+                        last_msg = datetime.fromisoformat(str(last_msg_raw))
+                    except ValueError:
+                        last_msg = datetime.strptime(str(last_msg_raw), "%Y-%m-%d %H:%M:%S")
+                if last_msg.tzinfo is None:
+                    last_msg = last_msg.replace(tzinfo=timezone.utc)
+                else:
+                    last_msg = last_msg.astimezone(timezone.utc)
                 
-                if last_sent_date != today_str:
-                    messages_sent_today = 0
-                    
-                if messages_sent_today >= settings.max_messages_per_user_per_day:
-                    logger.warning(f"[SCHEDULER] User {user_id} hit rate limit, skipping")
+            today_str = datetime.now(timezone.utc).date().isoformat()
+            
+            if last_sent_date != today_str:
+                messages_sent_today = 0
+                
+            if messages_sent_today >= settings.max_messages_per_user_per_day:
+                logger.warning(f"[SCHEDULER] User {user_id} hit rate limit, skipping")
+                return
+                
+            if settings.require_reminder_opt_in and not opt_in:
+                logger.warning(f"[SCHEDULER] User {user_id} not opted in, skipping")
+                return
+                
+            if last_msg:
+                now = datetime.now(timezone.utc)
+                delta = now - last_msg
+                if delta > timedelta(hours=24) and not settings.whatsapp_business_api_mode:
+                    logger.warning(f"[SCHEDULER] User {user_id} outside 24h window, skipping")
                     return
-                    
-                if settings.require_reminder_opt_in and not opt_in:
-                    logger.warning(f"[SCHEDULER] User {user_id} not opted in, skipping")
-                    return
-                    
-                if last_msg:
-                    now = datetime.now(timezone.utc)
-                    delta = now - last_msg
-                    if delta > timedelta(hours=24) and not settings.whatsapp_business_api_mode:
-                        logger.warning(f"[SCHEDULER] User {user_id} outside 24h window, skipping")
-                        return
 
         async with httpx.AsyncClient() as client:
             try:

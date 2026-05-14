@@ -85,7 +85,7 @@ class ACLRehabCoachBridge {
     });
   }
 
-  async handleMessage(userId, messageText, media) {
+  async handleMessage(userId, messageText, media, context = null) {
     console.log(`[BRIDGE] Processing message from ${userId}`);
 
     // Send typing indicator
@@ -93,7 +93,7 @@ class ACLRehabCoachBridge {
 
     try {
       // Forward message to Python coach
-      const result = await this.bridge.sendMessage(userId, messageText, media);
+      const result = await this.bridge.sendMessage(userId, messageText, media, context);
 
       await this.whatsapp.sendTyping(userId, false);
 

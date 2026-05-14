@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from app.coach import ACLRehabCoach
 from app.config import get_settings
 from app.scheduler import init_scheduler, get_scheduler
+from sqlalchemy import text as sa_text
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,11 @@ async def handle_message(request: Request) -> MessageResponse:
 
         if content_type.startswith("application/json"):
             payload = await request.json()
+            # Ensure context is preserved when forwarded from Node bridge
+            ctx = payload.get("context")
             request_data = MessageRequest(**payload)
+            if ctx and isinstance(ctx, dict):
+                request_data.context = ctx
         elif content_type.startswith("multipart/form-data"):
             form = await request.form()
             user_id = form.get("user_id")
@@ -143,10 +148,22 @@ async def handle_message(request: Request) -> MessageResponse:
                     "data": media_bytes,
                 }
 
+            # Parse optional context field (may be JSON string)
+            context_field = form.get("context")
+            context_obj = None
+            if context_field:
+                try:
+                    import json
+
+                    context_obj = json.loads(context_field)
+                except Exception:
+                    context_obj = {"raw": str(context_field)}
+
             request_data = MessageRequest(
                 user_id=str(user_id),
                 message_text=str(message_text),
                 media=media_payload,
+                context=context_obj,
             )
         else:
             raise HTTPException(status_code=415, detail="Unsupported content type")
@@ -156,20 +173,21 @@ async def handle_message(request: Request) -> MessageResponse:
         # Check for "done" style replies when context contains stanza id
         ctx = request_data.context or {}
         stanza_id = ctx.get("stanzaId") or ctx.get("stanza_id") or ctx.get("stanzaId")
-        text = request_data.message_text.strip().lower()
+        message_text_str = request_data.message_text or ""
+        text = message_text_str.strip().lower()
         if stanza_id and text in ("done", "done.", "✓", "ok", "okay"):
             # Match to reminder by last_stanza_id
             try:
                 engine = coach.db.get_engine_or_raise()
                 with engine.connect() as conn:
                     row = conn.execute(
-                        text("SELECT id, user_id FROM reminders WHERE last_stanza_id = :sid"),
+                        sa_text("SELECT id, user_id FROM reminders WHERE last_stanza_id = :sid"),
                         {"sid": stanza_id},
                     ).fetchone()
                     if row and row[1] == request_data.user_id:
                         # Insert adherence log
                         conn.execute(
-                            text(
+                            sa_text(
                                 "INSERT INTO adherence_logs (user_id, reminder_type, action_time, status, reminder_id, stanza_id) VALUES (:uid, :rtype, DATETIME('now'), :status, :rid, :sid)"
                             ),
                             {

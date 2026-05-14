@@ -141,10 +141,13 @@ export class WhatsAppBot {
     try {
       // Call the message handler (from main app)
       if (this.onMessage) {
-        const response = await this.onMessage(sender, messageText, imagePayload);
+        // Pass contextInfo from incoming message for reply matching
+        const contextInfo = msg.message?.contextInfo || null;
+        const response = await this.onMessage(sender, messageText, imagePayload, contextInfo);
         
         if (response) {
-          await this.sendMessage(sender, response);
+          // Forward contextInfo to sendMessage so the bridge can include it
+          await this.sendMessage(sender, response, contextInfo);
         }
       }
     } catch (error) {
@@ -203,7 +206,7 @@ export class WhatsAppBot {
     }
 
     return new Promise((resolve, reject) => {
-      this.sendQueue.push({ jid, content, resolve, reject });
+      this.sendQueue.push({ jid, content, context, resolve, reject });
       this.processQueue();
     });
   }
@@ -228,7 +231,7 @@ export class WhatsAppBot {
         continue;
       }
 
-      const { jid, content, resolve, reject } = this.sendQueue.shift();
+      const { jid, content, context, resolve, reject } = this.sendQueue.shift();
       this.tokens--;
 
       try {
@@ -245,7 +248,8 @@ export class WhatsAppBot {
         // Baileys returns a message ID/key - attempt to extract stanzaId
         const stanzaId = res?.key?.id || res?.key?.remoteJid || null;
         console.log(`✅ Sent message to ${jid} (stanzaId=${stanzaId})`);
-        resolve({ success: true, stanzaId });
+        // Return stanzaId and include context so bridge can persist it
+        resolve({ success: true, stanzaId, context });
       } catch (error) {
         console.error('[WhatsApp] Error sending message:', error);
         reject(error);
