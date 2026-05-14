@@ -248,3 +248,37 @@ class TestACLRehabTools:
 
         assert result["error"] is True
         assert "Unknown tool" in result["message"]
+
+
+def test_set_reminder_persists_is_active(tools: ACLRehabTools, temp_db: DatabaseManager, monkeypatch) -> None:
+    """Integration test: set_reminder schedules job and persists is_active=1.
+
+    Uses monkeypatch to safely replace the module-level scheduler and ensure teardown.
+    """
+    from sqlalchemy import text
+
+    class DummyScheduler:
+        def add_job(self, func, trigger, *args, **kwargs):
+            # Accept arbitrary kwargs to mirror APScheduler signature; capture id if provided
+            self.last_job_id = kwargs.get("id")
+
+    # Install dummy scheduler via monkeypatch to avoid test pollution
+    monkeypatch.setattr("app.scheduler", "scheduler", DummyScheduler())
+
+    user_id = "testuser@whatsapp"
+    result = tools.set_reminder(user_id=user_id, task="Drink Water", schedule_type="interval", time_value="1")
+
+    assert result.get("success") is True
+    reminder_id = result.get("reminder_id")
+    assert reminder_id is not None
+
+    # Verify DB row persisted with is_active = 1. Query by user_id to avoid tight coupling
+    with temp_db.engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT job_id, is_active FROM reminders WHERE user_id = :uid ORDER BY id DESC LIMIT 1"),
+            {"uid": user_id},
+        ).fetchone()
+
+    assert row is not None
+    # SQLite may return 0/1 or True/False; normalize to int
+    assert int(row[1]) == 1
