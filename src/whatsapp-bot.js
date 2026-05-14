@@ -4,11 +4,13 @@
  * Handles WhatsApp connection, message handling, and QR code authentication
  */
 
-import makeWASocket, { 
-  DisconnectReason, 
+import makeWASocket, {
+  DisconnectReason,
   useMultiFileAuthState,
   makeCacheableSignalKeyStore,
-  fetchLatestBaileysVersion
+  fetchLatestBaileysVersion,
+  downloadContentFromMessage,
+  getContentType
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import qrcode from 'qrcode-terminal';
@@ -109,21 +111,30 @@ export class WhatsAppBot {
       return;
     }
 
+    const imagePayload = await this.extractImageMessage(msg);
+
     const messageText = msg.message?.conversation || 
                        msg.message?.extendedTextMessage?.text ||
+                       imagePayload?.caption ||
                        '';
 
-    if (!messageText) return;
+    if (!messageText && !imagePayload) return;
 
     const sender = msg.key.remoteJid;
     
     console.log(`\n📩 Message from ${sender}:`);
-    console.log(`   "${messageText}"\n`);
+    if (messageText) {
+      console.log(`   "${messageText}"`);
+    }
+    if (imagePayload) {
+      console.log(`   [image] ${imagePayload.fileName || 'upload'} (${imagePayload.mimeType || 'unknown'})`);
+    }
+    console.log('');
 
     try {
       // Call the message handler (from main app)
       if (this.onMessage) {
-        const response = await this.onMessage(sender, messageText);
+        const response = await this.onMessage(sender, messageText, imagePayload);
         
         if (response) {
           await this.sendMessage(sender, response);
@@ -136,6 +147,47 @@ export class WhatsAppBot {
         '❌ Sorry, I encountered an error processing your message. Please try again.'
       );
     }
+  }
+
+  async extractImageMessage(msg) {
+    try {
+      const contentType = getContentType(msg.message);
+      let imageMessage = null;
+
+      if (contentType === 'imageMessage') {
+        imageMessage = msg.message?.imageMessage;
+      } else if (contentType === 'viewOnceMessageV2') {
+        imageMessage = msg.message?.viewOnceMessageV2?.message?.imageMessage;
+      } else if (contentType === 'viewOnceMessage') {
+        imageMessage = msg.message?.viewOnceMessage?.message?.imageMessage;
+      }
+
+      if (!imageMessage) return null;
+
+      const stream = await downloadContentFromMessage(imageMessage, 'image');
+      const buffer = await this.streamToBuffer(stream);
+      const mimeType = imageMessage.mimetype || 'image/jpeg';
+      const fileName = imageMessage.fileName || `image-${Date.now()}.jpg`;
+
+      return {
+        buffer,
+        mimeType,
+        fileName,
+        size: imageMessage.fileLength ? Number(imageMessage.fileLength) : buffer.length,
+        caption: imageMessage.caption || ''
+      };
+    } catch (error) {
+      console.error('[WhatsApp] Error extracting image:', error);
+      return null;
+    }
+  }
+
+  async streamToBuffer(stream) {
+    const chunks = [];
+    for await (const chunk of stream) {
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
   }
 
   async sendMessage(jid, text) {
