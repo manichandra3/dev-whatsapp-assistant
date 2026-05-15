@@ -51,14 +51,44 @@ class OnboardingManager:
             conn.commit()
 
     def update_session(self, user_id: str, **kwargs):
-        set_clauses = ", ".join([f"{k} = :{k}" for k in kwargs.keys()])
+        # Only allow updating known columns to prevent SQL injection via column names
+        allowed_columns = {
+            "current_step",
+            "surgery_date",
+            "baseline_pain",
+            "goal",
+            "timezone",
+            "gamification_opt_in",
+            "notification_freq",
+        }
+
+        # Filter provided kwargs to allowed columns only
+        update_items = {k: v for k, v in kwargs.items() if k in allowed_columns}
+        if not update_items:
+            # Nothing to update
+            return
+
+        set_clauses = ", ".join([f"{k} = :{k}" for k in update_items.keys()])
         set_clauses += ", updated_at = DATETIME('now')"
+
+        params = {k: v for k, v in update_items.items()}
+        # Normalize boolean for gamification_opt_in to integer 0/1 when present
+        if "gamification_opt_in" in params:
+            val = params["gamification_opt_in"]
+            if val is None:
+                params["gamification_opt_in"] = None
+            else:
+                params["gamification_opt_in"] = 1 if bool(val) else 0
+
+        params["user_id"] = user_id
+
         query = f"UPDATE onboarding_sessions SET {set_clauses} WHERE user_id = :user_id"
-        kwargs["user_id"] = user_id
-        
+
         with self.db.engine.connect() as conn:
-            conn.execute(text(query), kwargs)
+            conn.execute(text(query), params)
             conn.commit()
+
+
 
     def complete_session(self, user_id: str):
         session = self.get_session(user_id)
