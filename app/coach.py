@@ -45,7 +45,6 @@ class ACLRehabCoach:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.conversations: dict[str, list[dict[str, Any]]] = {}
 
         # Initialize components
         self.safety = SafetyInterceptor()
@@ -59,7 +58,7 @@ class ACLRehabCoach:
 
         self.tools = ACLRehabTools(self.db, self.llm)
         self.onboarding = OnboardingManager(self.db)
-        
+
         from app.media import MediaManager
         self.media_manager = MediaManager(self.db)
 
@@ -228,7 +227,6 @@ class ACLRehabCoach:
         except Exception as e:
             logger.error(f"[COACH] Error processing message: {e}")
 
-            # Auto-heal for Anthropic format errors (same behavior as Node.js)
             err_msg = str(e)
             if self.llm.provider == "anthropic" and (
                 "Input should be a valid list" in err_msg
@@ -238,9 +236,10 @@ class ACLRehabCoach:
                     f"[COACH] Resetting conversation history for {user_id} "
                     "due to Anthropic format error"
                 )
-                self.conversations[user_id] = [
-                    {"role": "system", "content": self.llm.get_system_prompt()}
-                ]
+                self.db.save_conversation_history(
+                    user_id,
+                    [{"role": "system", "content": self.llm.get_system_prompt()}]
+                )
                 return self.FORMAT_RECOVERY_MESSAGE
 
             return self.GENERIC_ERROR_MESSAGE
@@ -250,8 +249,6 @@ class ACLRehabCoach:
         user_config = self.db.get_user_config(user_id)
 
         if not user_config:
-            # We shouldn't hit this if onboarding is enabled and working,
-            # but keep it as a fallback.
             surgery_date = (
                 self.settings.surgery_date
                 or date.today().isoformat()
@@ -263,38 +260,33 @@ class ACLRehabCoach:
                 f"with surgery date: {surgery_date}"
             )
 
-            # Initialize conversation with system prompt
-            self.conversations[user_id] = [
-                {"role": "system", "content": self.llm.get_system_prompt()}
-            ]
-
-        elif user_id not in self.conversations:
-            # User exists but no conversation history - initialize
-            self.conversations[user_id] = [
-                {"role": "system", "content": self.llm.get_system_prompt()}
-            ]
+            # Initialize conversation with system prompt in DB
+            system_prompt = self.llm.get_system_prompt()
+            self.db.save_conversation_history(
+                user_id,
+                [{"role": "system", "content": system_prompt}]
+            )
 
     def _get_conversation_history(self, user_id: str) -> list[dict[str, Any]]:
-        """Get conversation history for a user."""
-        if user_id in self.conversations:
-            # Return a copy to avoid modifying the stored history directly
-            return list(self.conversations[user_id])
-
-        return [{"role": "system", "content": self.llm.get_system_prompt()}]
+        """Get conversation history for a user from DB."""
+        system_prompt = self.llm.get_system_prompt()
+        return self.db.get_conversation_history(user_id, system_prompt)
 
     def _update_conversation_history(
         self, user_id: str, messages: list[dict[str, Any]]
     ) -> None:
-        """Update conversation history, keeping last 20 messages."""
+        """Update conversation history in DB, keeping last 20 messages."""
         max_messages = 20
 
         if len(messages) > max_messages:
             # Always keep system message
             system_msg = messages[0]
-            recent_messages = messages[-(max_messages - 1) :]
-            self.conversations[user_id] = [system_msg, *recent_messages]
+            recent_messages = messages[-(max_messages - 1):]
+            trimmed_messages = [system_msg, *recent_messages]
         else:
-            self.conversations[user_id] = messages
+            trimmed_messages = messages
+
+        self.db.save_conversation_history(user_id, trimmed_messages)
 
     def close(self) -> None:
         """Clean up resources."""

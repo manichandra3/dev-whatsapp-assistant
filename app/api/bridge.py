@@ -225,7 +225,7 @@ async def handle_message(request: Request) -> MessageResponse:
         logger.error(f"[BRIDGE] Error handling message: {e}")
         return MessageResponse(
             success=False,
-            error=str(e),
+            error="An unexpected error occurred. Please try again.",
             response="❌ I apologize, but I encountered a technical issue. Please try sending your message again.",
         )
 
