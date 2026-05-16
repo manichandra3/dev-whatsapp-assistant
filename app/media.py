@@ -2,7 +2,7 @@ import hashlib
 import logging
 import os
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.config import get_settings
@@ -43,7 +43,7 @@ class MediaManager:
         os.chmod(file_path, 0o600)
 
         # Register in DB
-        created_at = datetime.utcnow()
+        created_at = datetime.now(timezone.utc)
         expires_at = created_at + timedelta(days=self.retention_days)
         
         with self.db.engine.connect() as conn:
@@ -72,7 +72,7 @@ class MediaManager:
 
     def cleanup_expired_media(self) -> int:
         """Deletes expired media from disk and DB."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         count = 0
         
         with self.db.engine.connect() as conn:
