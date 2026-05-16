@@ -115,7 +115,7 @@ class ACLRehabCoach:
 
         # Use LangGraph if enabled
         if self.agent_graph is not None:
-            return await self.agent_graph.run(user_id, message_text, media_id=media_id)
+            return await self.agent_graph.run(user_id, message_text, media_id=media_id, media=media)
 
         # Legacy implementation
         return await self._handle_message_legacy(user_id, message_text, media, media_id)

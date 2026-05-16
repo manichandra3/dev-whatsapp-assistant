@@ -44,7 +44,7 @@ class Settings(BaseSettings):
 
     # WhatsApp Safeguards & Features
     whatsapp_business_api_mode: bool = False
-    max_messages_per_user_per_day: int = 1
+    max_messages_per_user_per_day: int = 100
     enable_interactive_messages: bool = True
     require_reminder_opt_in: bool = True
     whatsapp_send_rate_limit_per_min: int = 10

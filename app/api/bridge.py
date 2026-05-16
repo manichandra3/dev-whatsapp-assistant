@@ -59,8 +59,8 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     coach = ACLRehabCoach(settings)
 
-    # Init APScheduler
-    init_scheduler(settings.database_path, settings.node_bridge_port)
+    # Init APScheduler with database manager reference for scheduled jobs
+    init_scheduler(settings.database_path, settings.node_bridge_port, db=coach.db)
 
     logger.info(f"[BRIDGE] Started with provider: {settings.llm_provider}")
     logger.info(f"[BRIDGE] Model: {settings.llm_model}")
@@ -170,9 +170,12 @@ async def handle_message(request: Request) -> MessageResponse:
 
         logger.info(f"[BRIDGE] Received message from {request_data.user_id}")
 
+        # Always update last message time BEFORE any early returns
+        coach.db.update_last_message_time(request_data.user_id)
+
         # Check for "done" style replies when context contains stanza id
         ctx = request_data.context or {}
-        stanza_id = ctx.get("stanzaId") or ctx.get("stanza_id") or ctx.get("stanzaId")
+        stanza_id = ctx.get("stanzaId") or ctx.get("stanza_id")
         message_text_str = request_data.message_text or ""
         text = message_text_str.strip().lower()
         if stanza_id and text in ("done", "done.", "✓", "ok", "okay"):
@@ -202,9 +205,6 @@ async def handle_message(request: Request) -> MessageResponse:
                         return MessageResponse(success=True, response="Thanks — logged your completion of the reminder.")
             except Exception as e:
                 logger.warning(f"[BRIDGE] Error matching done reply: {e}")
-
-        # Update last message time in DB
-        coach.db.update_last_message_time(request_data.user_id)
 
         response = await coach.handle_message(
             user_id=request_data.user_id,

@@ -285,15 +285,27 @@ class CoachGraph:
 
         return state
 
-    async def run(self, user_id: str, message_text: str, media_id: str | None = None) -> str:
+    async def run(
+        self,
+        user_id: str,
+        message_text: str,
+        media_id: str | None = None,
+        media: dict[str, Any] | None = None,
+    ) -> str:
         """Run the graph and return the final response."""
         
-        # We need to prepend media_id info to message_text if it exists,
-        # or we can pass it down. Wait, we can append it directly to message_text 
-        # so the LLM knows about it.
-        # But wait, in the legacy we just appended it to the text. We can do that here.
-        if media_id:
-            message_text = f"{message_text}\n\n[MEDIA ATTACHED]\nMedia ID: {media_id}"
+        if media or media_id:
+            media_parts = ["[MEDIA ATTACHED]"]
+            if media:
+                media_parts.append(f"Type: {media.get('content_type', 'unknown')}")
+                media_parts.append(f"Filename: {media.get('filename', 'unknown')}")
+                if media_id:
+                    media_parts.append(f"Media ID: {media_id}")
+                if media.get("caption"):
+                    media_parts.append(f"Caption: {media.get('caption')}")
+            elif media_id:
+                media_parts.append(f"Media ID: {media_id}")
+            message_text = f"{message_text}\n\n" + "\n".join(media_parts)
 
         initial_state: CoachState = {
             "user_id": user_id,

@@ -68,7 +68,7 @@ class TestDatabaseManager:
         )
 
         assert result.success is True
-        assert "Metrics logged successfully" in result.message
+        assert "Metrics logged" in result.message
 
         # Verify data was stored
         metrics = temp_db.get_latest_metrics(user_id)

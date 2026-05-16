@@ -1,4 +1,5 @@
 import logging
+from datetime import date
 from sqlalchemy import text
 from app.database import DatabaseManager
 
@@ -50,43 +51,32 @@ class OnboardingManager:
             )
             conn.commit()
 
-    def update_session(self, user_id: str, **kwargs):
-        # Only allow updating known columns to prevent SQL injection via column names
-        allowed_columns = {
-            "current_step",
-            "surgery_date",
-            "baseline_pain",
-            "goal",
-            "timezone",
-            "gamification_opt_in",
-            "notification_freq",
+    def _update_session_field(self, user_id: str, field: str, value) -> None:
+        """Update a single onboarding session field safely."""
+        allowed = {
+            "current_step", "surgery_date", "baseline_pain",
+            "goal", "timezone", "gamification_opt_in", "notification_freq",
         }
-
-        # Filter provided kwargs to allowed columns only
-        update_items = {k: v for k, v in kwargs.items() if k in allowed_columns}
-        if not update_items:
-            # Nothing to update
-            return
-
-        set_clauses = ", ".join([f"{k} = :{k}" for k in update_items.keys()])
-        set_clauses += ", updated_at = DATETIME('now')"
-
-        params = {k: v for k, v in update_items.items()}
-        # Normalize boolean for gamification_opt_in to integer 0/1 when present
-        if "gamification_opt_in" in params:
-            val = params["gamification_opt_in"]
-            if val is None:
-                params["gamification_opt_in"] = None
-            else:
-                params["gamification_opt_in"] = 1 if bool(val) else 0
-
-        params["user_id"] = user_id
-
-        query = f"UPDATE onboarding_sessions SET {set_clauses} WHERE user_id = :user_id"
-
+        if field not in allowed:
+            raise ValueError(f"Unknown onboarding field: {field}")
+        val = value
+        if field == "gamification_opt_in" and value is not None:
+            val = 1 if bool(value) else 0
         with self.db.engine.connect() as conn:
-            conn.execute(text(query), params)
+            conn.execute(
+                text(f"UPDATE onboarding_sessions SET {field} = :val, updated_at = DATETIME('now') WHERE user_id = :uid"),
+                {"val": val, "uid": user_id},
+            )
             conn.commit()
+
+    def update_session(self, user_id: str, **kwargs):
+        allowed = {
+            "current_step", "surgery_date", "baseline_pain",
+            "goal", "timezone", "gamification_opt_in", "notification_freq",
+        }
+        for key, value in kwargs.items():
+            if key in allowed:
+                self._update_session_field(user_id, key, value)
 
 
 
@@ -100,6 +90,8 @@ class OnboardingManager:
         if gamification_opt_in is None:
             gamification_opt_in = False
 
+        surgery_date = session.get("surgery_date") or date.today().isoformat()
+
         # Update user config
         with self.db.engine.connect() as conn:
             conn.execute(
@@ -108,15 +100,17 @@ class OnboardingManager:
                 SET surgery_date = :surgery_date,
                     timezone = :timezone,
                     gamification_opt_in = :gamification_opt_in,
-                    goals = :goals
+                    goals = :goals,
+                    notification_freq = :notification_freq
                 WHERE user_id = :user_id
                 """),
                 {
                     "user_id": user_id,
-                    "surgery_date": session["surgery_date"] or "2026-01-01",
+                    "surgery_date": surgery_date,
                     "timezone": session["timezone"] or "UTC",
                     "gamification_opt_in": 1 if gamification_opt_in else 0,
-                    "goals": session["goal"]
+                    "goals": session["goal"],
+                    "notification_freq": session.get("notification_freq"),
                 }
             )
             
