@@ -62,6 +62,7 @@ class UserConfig:
     image_opt_in: bool | None = None
     image_auto_confirm: bool | None = None
     whatsapp_reminder_opt_in: bool = False
+    notification_freq: str | None = None
     opt_in_timestamp: str | None = None
     last_user_message_at: str | None = None
     messages_sent_today: int = 0
@@ -156,6 +157,7 @@ class DatabaseManager:
             Column("image_opt_in", Boolean, default=False),
             Column("image_auto_confirm", Boolean, default=False),
             Column("whatsapp_reminder_opt_in", Boolean, default=False),
+            Column("notification_freq", Text),
             Column("opt_in_timestamp", DateTime),
             Column("last_user_message_at", DateTime),
             Column("messages_sent_today", Integer, default=0),
@@ -334,7 +336,8 @@ class DatabaseManager:
                 conn.execute(text("ALTER TABLE user_config ADD COLUMN messages_sent_today INTEGER DEFAULT 0"))
             if "last_sent_date" not in col_names:
                 conn.execute(text("ALTER TABLE user_config ADD COLUMN last_sent_date TEXT"))
-
+            if "notification_freq" not in col_names:
+                conn.execute(text("ALTER TABLE user_config ADD COLUMN notification_freq TEXT"))
                 
             # Check reminders columns
             columns = conn.execute(text("PRAGMA table_info(reminders)")).fetchall()
@@ -452,20 +455,12 @@ class DatabaseManager:
                 conn.commit()
 
             today = date.today().isoformat()
-            adherence_str = "Completed ✓" if adherence else "Not done ✗"
 
             logger.info(f"[DATABASE] Logged metrics for user {user_id}")
 
             return MetricsLogResult(
                 success=True,
-                message=(
-                    f"✅ Metrics logged successfully!\n\n"
-                    f"📊 Today's Check-in:\n"
-                    f"• Pain: {pain_level}/10\n"
-                    f"• Swelling: {swelling_status}\n"
-                    f"• ROM: {rom_extension}° extension, {rom_flexion}° flexion\n"
-                    f"• Exercises: {adherence_str}"
-                ),
+                message=f"Metrics logged for {today}: pain={pain_level}/10, swelling={swelling_status}, rom_extension={rom_extension}, rom_flexion={rom_flexion}, adherence={adherence}",
                 data={
                     "userId": user_id,
                     "date": today,
@@ -540,6 +535,7 @@ class DatabaseManager:
                     image_opt_in=bool(row["image_opt_in"]) if row["image_opt_in"] is not None else None,
                     image_auto_confirm=bool(row["image_auto_confirm"]) if row["image_auto_confirm"] is not None else None,
                     whatsapp_reminder_opt_in=bool(row.get("whatsapp_reminder_opt_in") or False),
+                    notification_freq=str(row.get("notification_freq")) if row.get("notification_freq") is not None else None,
                     opt_in_timestamp=str(row.get("opt_in_timestamp")) if row.get("opt_in_timestamp") is not None else None,
                     last_user_message_at=str(row.get("last_user_message_at")) if row.get("last_user_message_at") is not None else None,
                     messages_sent_today=int(row.get("messages_sent_today") or 0),
