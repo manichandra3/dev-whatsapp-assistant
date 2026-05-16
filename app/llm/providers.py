@@ -10,9 +10,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-import anthropic
+from anthropic import AsyncAnthropic
 from google import genai
-import openai
+from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -69,9 +69,9 @@ class LLMProvider:
     def _initialize_client(self) -> None:
         """Initialize the appropriate client based on provider."""
         if self.provider == "openai":
-            self.client = openai.OpenAI(api_key=self.api_key)
+            self.client = AsyncOpenAI(api_key=self.api_key)
         elif self.provider == "anthropic":
-            self.client = anthropic.Anthropic(api_key=self.api_key)
+            self.client = AsyncAnthropic(api_key=self.api_key)
         elif self.provider == "google":
             self.client = genai.Client(api_key=self.api_key)
         else:
@@ -189,7 +189,7 @@ Remember: You're a supportive coach helping them stay on track with their recove
             params["tools"] = tools
             params["tool_choice"] = "auto"
 
-        response = self.client.chat.completions.create(**params)
+        response = await self.client.chat.completions.create(**params)
         choice = response.choices[0]
 
         tool_calls = []
@@ -292,7 +292,7 @@ Remember: You're a supportive coach helping them stay on track with their recove
                 for t in tools
             ]
 
-        response = self.client.messages.create(**params)
+        response = await self.client.messages.create(**params)
 
         # Parse tool calls from content
         tool_calls = []
@@ -390,7 +390,7 @@ Remember: You're a supportive coach helping them stay on track with their recove
             
         try:
             if self.provider == "openai":
-                response = self.client.chat.completions.create(
+                response = await self.client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {
@@ -409,9 +409,9 @@ Remember: You're a supportive coach helping them stay on track with their recove
                     max_tokens=1000
                 )
                 return response.choices[0].message.content
-                
+
             elif self.provider == "anthropic":
-                response = self.client.messages.create(
+                response = await self.client.messages.create(
                     model=self.model,
                     max_tokens=1000,
                     messages=[

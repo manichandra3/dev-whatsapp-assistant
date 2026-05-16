@@ -6,6 +6,7 @@ Uses SQLAlchemy Core for direct SQL execution while maintaining compatibility
 with the existing Node.js database schema.
 """
 
+import json
 import logging
 from dataclasses import dataclass
 from datetime import date
@@ -271,6 +272,16 @@ class DatabaseManager:
             Column("raw_text", Text, nullable=False),
             Column("parsed_json", Text, nullable=False),
             Column("created_at", DateTime, nullable=False, server_default=text("DATETIME('now')")),
+        )
+
+        self.conversation_history = Table(
+            "conversation_history",
+            self.metadata,
+            Column("user_id", Text, primary_key=True),
+            Column("messages_json", Text, nullable=False),
+            Column(
+                "updated_at", DateTime, nullable=False, server_default=text("DATETIME('now')")
+            ),
         )
 
     def _init(self) -> None:
@@ -630,3 +641,47 @@ class DatabaseManager:
                 {"user_id": user_id}
             )
             conn.commit()
+
+    def get_conversation_history(self, user_id: str, system_prompt: str) -> list[dict[str, Any]]:
+        """Get conversation history for a user from DB, or return default if none exists."""
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(
+                    text("SELECT messages_json FROM conversation_history WHERE user_id = :user_id"),
+                    {"user_id": user_id},
+                ).fetchone()
+
+                if result:
+                    messages = json.loads(result[0])
+                    return messages
+
+                return [{"role": "system", "content": system_prompt}]
+        except json.JSONDecodeError:
+            logger.warning(f"[DATABASE] Corrupted conversation history for {user_id}, resetting")
+            return [{"role": "system", "content": system_prompt}]
+        except Exception as e:
+            logger.error(f"[DATABASE] Error loading conversation history: {e}")
+            return [{"role": "system", "content": system_prompt}]
+
+    def save_conversation_history(self, user_id: str, messages: list[dict[str, Any]]) -> None:
+        """Save conversation history for a user to DB."""
+        try:
+            messages_json = json.dumps(messages)
+            with self.engine.connect() as conn:
+                conn.execute(
+                    text(
+                        """
+                    INSERT INTO conversation_history (user_id, messages_json, updated_at)
+                    VALUES (:user_id, :messages_json, DATETIME('now'))
+                    ON CONFLICT(user_id)
+                    DO UPDATE SET
+                        messages_json = excluded.messages_json,
+                        updated_at = DATETIME('now')
+                    """
+                    ),
+                    {"user_id": user_id, "messages_json": messages_json},
+                )
+                conn.commit()
+            logger.info(f"[DATABASE] Saved conversation history for {user_id}")
+        except Exception as e:
+            logger.error(f"[DATABASE] Error saving conversation history: {e}")

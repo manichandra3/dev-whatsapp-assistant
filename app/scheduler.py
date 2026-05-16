@@ -73,6 +73,7 @@ async def send_scheduled_reminder(
     user_id: str, message_type: str, content: str, reminder_id: str | None = None
 ) -> None:
     """Job function to send the reminder via Node.js bridge."""
+    db = None
     try:
         from app.database import DatabaseManager
         from app.config import get_settings
@@ -95,19 +96,18 @@ async def send_scheduled_reminder(
                 ),
                 {"uid": user_id},
             ).fetchone()
-            
-            # Require an explicit user_config row to enforce safeguards
+
             if not user:
                 logger.warning(f"[SCHEDULER] No user_config for {user_id}, skipping reminder send")
                 return
 
-            # Rate limiting / Safeguards
             row = user._mapping
             last_msg_raw = row.get("last_user_message_at")
             opt_in = bool(row.get("whatsapp_reminder_opt_in") or False)
             messages_sent_today = int(row.get("messages_sent_today") or 0)
             last_sent_date = row.get("last_sent_date")
             last_msg = None
+            last_msg_parse_failed = False
 
             if last_msg_raw:
                 if isinstance(last_msg_raw, datetime):
@@ -116,25 +116,37 @@ async def send_scheduled_reminder(
                     try:
                         last_msg = datetime.fromisoformat(str(last_msg_raw))
                     except ValueError:
-                        last_msg = datetime.strptime(str(last_msg_raw), "%Y-%m-%d %H:%M:%S")
-                if last_msg.tzinfo is None:
-                    last_msg = last_msg.replace(tzinfo=timezone.utc)
+                        try:
+                            last_msg = datetime.strptime(str(last_msg_raw), "%Y-%m-%d %H:%M:%S")
+                        except ValueError:
+                            logger.warning(f"[SCHEDULER] Could not parse last_user_message_at: {last_msg_raw}, skipping reminder")
+                            last_msg_parse_failed = True
+                if last_msg:
+                    if last_msg.tzinfo is None:
+                        last_msg = last_msg.replace(tzinfo=timezone.utc)
+                    else:
+                        last_msg = last_msg.astimezone(timezone.utc)
+
+            if last_msg is None:
+                if last_msg_parse_failed:
+                    logger.warning(f"[SCHEDULER] Could not parse last_user_message_at: {last_msg_raw}, skipping reminder")
                 else:
-                    last_msg = last_msg.astimezone(timezone.utc)
-                
+                    logger.warning(f"[SCHEDULER] No last_user_message_at for {user_id}, skipping reminder")
+                return
+
             today_str = datetime.now(timezone.utc).date().isoformat()
-            
+
             if last_sent_date != today_str:
                 messages_sent_today = 0
-                
+
             if messages_sent_today >= settings.max_messages_per_user_per_day:
                 logger.warning(f"[SCHEDULER] User {user_id} hit rate limit, skipping")
                 return
-                
+
             if settings.require_reminder_opt_in and not opt_in:
                 logger.warning(f"[SCHEDULER] User {user_id} not opted in, skipping")
                 return
-                
+
             if last_msg:
                 now = datetime.now(timezone.utc)
                 delta = now - last_msg
@@ -148,33 +160,47 @@ async def send_scheduled_reminder(
                 if health.status_code != 200 or health.json().get("status") not in ("ok", "healthy"):
                     logger.warning("[SCHEDULER] Bridge unhealthy, skipping")
                     return
+            except httpx.TimeoutException:
+                logger.warning(f"[SCHEDULER] Bridge health check timed out")
+                return
+            except httpx.ConnectError as e:
+                logger.warning(f"[SCHEDULER] Bridge connection failed: {e}")
+                return
             except Exception as e:
                 logger.warning(f"[SCHEDULER] Bridge health check failed: {e}")
                 return
 
             payload = {"userId": user_id, "messageText": content, "context": {"reminder_id": str(reminder_id) if reminder_id else None}}
-            
-            # Interactive payload example if enabled
+
             if settings.enable_interactive_messages:
                 payload["whatsapp_payload"] = {
                     "type": "buttons",
                     "body": {"text": content},
                     "buttons": [{"id": f"ack_{reminder_id}", "text": "Got it ✓"}]
                 }
-            
-            response = await client.post(
-                f"http://127.0.0.1:{_node_bridge_port}{_bridge_send_path}",
-                json=payload,
-                timeout=10.0,
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            # Update counts
+
+            try:
+                response = await client.post(
+                    f"http://127.0.0.1:{_node_bridge_port}{_bridge_send_path}",
+                    json=payload,
+                    timeout=10.0,
+                )
+                response.raise_for_status()
+                data = response.json()
+            except httpx.TimeoutException:
+                logger.warning(f"[SCHEDULER] Timeout sending reminder to {user_id}")
+                return
+            except httpx.HTTPStatusError as e:
+                logger.warning(f"[SCHEDULER] HTTP error sending reminder to {user_id}: {e.response.status_code}")
+                return
+            except Exception as e:
+                logger.warning(f"[SCHEDULER] Failed to send reminder to {user_id}: {e}")
+                return
+
             with engine.connect() as conn:
                 today_str = datetime.now(timezone.utc).date().isoformat()
                 conn.execute(text("""
-                    UPDATE user_config SET 
+                    UPDATE user_config SET
                     messages_sent_today = CASE WHEN last_sent_date = :today THEN messages_sent_today + 1 ELSE 1 END,
                     last_sent_date = :today
                     WHERE user_id = :uid
@@ -196,3 +222,9 @@ async def send_scheduled_reminder(
             logger.info(f"[SCHEDULER] Successfully pushed reminder to {user_id}")
     except Exception as e:
         logger.exception(f"[SCHEDULER] Failed to push reminder to {user_id}: {e}")
+    finally:
+        if db:
+            try:
+                db.close()
+            except Exception:
+                pass
