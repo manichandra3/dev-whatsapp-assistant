@@ -263,7 +263,7 @@ def test_set_reminder_persists_is_active(tools: ACLRehabTools, temp_db: Database
             self.last_job_id = kwargs.get("id")
 
     # Install dummy scheduler via monkeypatch to avoid test pollution
-    monkeypatch.setattr("app.scheduler", "scheduler", DummyScheduler())
+    monkeypatch.setattr("app.scheduler.scheduler", DummyScheduler())
 
     user_id = "testuser@whatsapp"
     result = tools.set_reminder(user_id=user_id, task="Drink Water", schedule_type="interval", time_value="1")

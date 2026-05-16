@@ -20,13 +20,13 @@ export class SafetyInterceptor {
       /\b(loud\s+pop|popping\s+sound|heard\s+pop|graft\s+failure|knee\s+gave\s+out)\b/i,
       
       // Severe swelling
-      /\b(huge\s+swelling|massive\s+swelling|extreme\s+swelling|swelling\s+worse|excessive\s+swelling)\b/i,
-      
+      /\b(huge\s+swelling|massive\s+swelling|extreme\s+swelling|swelling\s+worse|excessive\s+swelling|swelling\s+is\s+huge|getting\s+worse)\b/i,
+
       // Severe pain
-      /\b(severe\s+pain|unbearable\s+pain|excruciating|pain\s+level\s+(9|10)|worst\s+pain)\b/i,
-      
+      /\b(severe\s+pain|unbearable\s+pain|excruciating|pain\s+level\s+(9|10)|pain\s+level\s+is\s+(9|10)|worst\s+pain)\b/i,
+
       // Neurological symptoms
-      /\b(numbness|tingling|loss\s+of\s+feeling|can't\s+feel|nerve\s+damage)\b/i,
+      /\b(numb|numbness|tingling|tingly|loss\s+of\s+feeling|can't\s+feel|nerve\s+damage)\b/i,
       
       // Cardiovascular/respiratory emergencies
       /\b(chest\s+pain|breathing\s+difficult|shortness\s+of\s+breath|can't\s+breathe)\b/i,
