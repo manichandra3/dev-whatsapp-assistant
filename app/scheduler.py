@@ -18,12 +18,16 @@ scheduler: AsyncIOScheduler | None = None
 _node_bridge_port: int = 3000
 _bridge_health_path: str = "/health"
 _bridge_send_path: str = "/api/send-message"
+_db: "DatabaseManager | None" = None
 
 
-def init_scheduler(db_path: str, bridge_port: int = 3000) -> AsyncIOScheduler:
+def init_scheduler(
+    db_path: str, bridge_port: int = 3000, db: "DatabaseManager | None" = None
+) -> AsyncIOScheduler:
     """Initialize the APScheduler with a separate SQLAlchemy Job Store."""
-    global scheduler, _node_bridge_port
+    global scheduler, _node_bridge_port, _db
     _node_bridge_port = bridge_port
+    _db = db
     if scheduler:
         return scheduler
 
@@ -73,14 +77,17 @@ async def send_scheduled_reminder(
     user_id: str, message_type: str, content: str, reminder_id: str | None = None
 ) -> None:
     """Job function to send the reminder via Node.js bridge."""
-    db = None
+    global _db
     try:
-        from app.database import DatabaseManager
         from app.config import get_settings
         settings = get_settings()
-        db = DatabaseManager(settings.database_path)
 
-        engine = db.get_engine_or_raise()
+        # Use cached database manager instead of creating a new one per invocation
+        if _db is None:
+            from app.database import DatabaseManager
+            _db = DatabaseManager(settings.database_path)
+        engine = _db.get_engine_or_raise()
+
         with engine.connect() as conn:
             user = conn.execute(
                 text(
@@ -198,7 +205,6 @@ async def send_scheduled_reminder(
                 return
 
             with engine.connect() as conn:
-                today_str = datetime.now(timezone.utc).date().isoformat()
                 conn.execute(text("""
                     UPDATE user_config SET
                     messages_sent_today = CASE WHEN last_sent_date = :today THEN messages_sent_today + 1 ELSE 1 END,
@@ -222,9 +228,3 @@ async def send_scheduled_reminder(
             logger.info(f"[SCHEDULER] Successfully pushed reminder to {user_id}")
     except Exception as e:
         logger.exception(f"[SCHEDULER] Failed to push reminder to {user_id}: {e}")
-    finally:
-        if db:
-            try:
-                db.close()
-            except Exception:
-                pass
