@@ -107,6 +107,7 @@ async def send_scheduled_reminder(
             messages_sent_today = int(row.get("messages_sent_today") or 0)
             last_sent_date = row.get("last_sent_date")
             last_msg = None
+            last_msg_parse_failed = False
 
             if last_msg_raw:
                 if isinstance(last_msg_raw, datetime):
@@ -118,12 +119,16 @@ async def send_scheduled_reminder(
                         try:
                             last_msg = datetime.strptime(str(last_msg_raw), "%Y-%m-%d %H:%M:%S")
                         except ValueError:
-                            logger.warning(f"[SCHEDULER] Could not parse last_user_message_at: {last_msg_raw}")
+                            logger.warning(f"[SCHEDULER] Could not parse last_user_message_at: {last_msg_raw}, skipping reminder")
+                            last_msg_parse_failed = True
                 if last_msg:
                     if last_msg.tzinfo is None:
                         last_msg = last_msg.replace(tzinfo=timezone.utc)
                     else:
                         last_msg = last_msg.astimezone(timezone.utc)
+
+            if last_msg_parse_failed:
+                return
 
             today_str = datetime.now(timezone.utc).date().isoformat()
 
